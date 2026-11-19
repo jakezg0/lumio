@@ -229,6 +229,14 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
     return null;
   }
 
+  String? _validateSignedInt(String? value, String label) {
+    final parsed = int.tryParse((value ?? '').trim());
+    if (parsed == null) {
+      return widget.controller.strings.invalidNumber(label);
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
@@ -379,7 +387,9 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                   Expanded(
                     child: TextFormField(
                       controller: _stockController,
-                      keyboardType: TextInputType.number,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        signed: true,
+                      ),
                       decoration: InputDecoration(
                         labelText: strings.stockQtyRequired,
                         border: const OutlineInputBorder(),
@@ -392,7 +402,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                           icon: const Icon(Icons.calculate_outlined),
                         ),
                       ),
-                      validator: (v) => _validateNonNegativeInt(v, 'stock'),
+                      validator: (v) => _validateSignedInt(v, 'stock'),
                     ),
                   ),
                   const SizedBox(width: 10),

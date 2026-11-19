@@ -19,8 +19,7 @@ migrate_working_dir/
 .idea/
 
 # The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
+# VS Code which you may wish to be included in the Russian/English VS Code docs.
 #.vscode/
 
 # Flutter/Dart/Pub related
@@ -50,3 +49,9 @@ app.*.map.json
 # Local shop price lists
 *.xlsx
 цены и товары/
+
+# Android release signing keys (never commit!)
+android/key.properties
+*.jks
+*.keystore
+apps_script_lumio.gs

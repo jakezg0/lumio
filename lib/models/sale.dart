@@ -170,8 +170,9 @@ class Sale {
     this.secondaryPaymentMethod,
     this.secondaryAmount = 0,
     this.customerName = '',
+    this.customerPhone = '',
     this.discount = 0,
-    double? paidAmount,
+    this._paidAmount,
     this.dueDate,
     this.paidAt,
     this.paymentHistory = const [],
@@ -183,7 +184,7 @@ class Sale {
     this.archivedAt,
     this.trashedAt,
     required this.createdAt,
-  }) : _paidAmount = paidAmount;
+  });
 
   final String id;
   final List<SaleItem> items;
@@ -191,6 +192,7 @@ class Sale {
   final PaymentMethod? secondaryPaymentMethod;
   final double secondaryAmount;
   final String customerName;
+  final String customerPhone;
   final double discount;
   final double? _paidAmount;
   final DateTime? dueDate;
@@ -267,6 +269,7 @@ class Sale {
     bool clearSecondaryPaymentMethod = false,
     double? secondaryAmount,
     String? customerName,
+    String? customerPhone,
     double? discount,
     double? paidAmount,
     DateTime? dueDate,
@@ -293,6 +296,7 @@ class Sale {
           : (secondaryPaymentMethod ?? this.secondaryPaymentMethod),
       secondaryAmount: secondaryAmount ?? this.secondaryAmount,
       customerName: customerName ?? this.customerName,
+      customerPhone: customerPhone ?? this.customerPhone,
       discount: discount ?? this.discount,
       paidAmount: paidAmount ?? this.paidAmount,
       dueDate: dueDate ?? this.dueDate,
@@ -318,6 +322,7 @@ class Sale {
         'secondaryPaymentMethod': secondaryPaymentMethod!.name,
       if (secondaryAmount > 0) 'secondaryAmount': secondaryAmount,
       'customerName': customerName,
+      if (customerPhone.isNotEmpty) 'customerPhone': customerPhone,
       'discount': discount,
       'paidAmount': paidAmount,
       'dueDate': dueDate?.toIso8601String(),
@@ -357,6 +362,7 @@ class Sale {
           : null,
       secondaryAmount: (json['secondaryAmount'] as num?)?.toDouble() ?? 0,
       customerName: (json['customerName'] as String?) ?? '',
+      customerPhone: (json['customerPhone'] as String?) ?? '',
       discount: (json['discount'] as num?)?.toDouble() ?? 0,
       paidAmount: (json['paidAmount'] as num?)?.toDouble(),
       dueDate: dueDateRaw != null ? DateTime.tryParse(dueDateRaw) : null,

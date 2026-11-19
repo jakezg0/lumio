@@ -79,86 +79,88 @@ class _CustomersSheetState extends State<CustomersSheet> {
           return _matchesQuery(entry.customer, entry.stats, _query);
         }).toList();
 
-        return Padding(
-          padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '${strings.customersBtn} (${allCustomers.length})',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  FilledButton.tonalIcon(
-                    onPressed: () => _openCustomerForm(),
-                    icon: const Icon(Icons.person_add_alt_1, size: 18),
-                    label: Text(strings.addCustomerBtn),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _searchController,
-                onChanged: (v) => setState(() => _query = v),
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.search),
-                  hintText: strings.searchCustomersHint,
-                  isDense: true,
-                  border: const OutlineInputBorder(),
-                  suffixIcon: _query.isNotEmpty
-                      ? IconButton(
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _query = '');
-                          },
-                          icon: const Icon(Icons.clear),
-                        )
-                      : null,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                children: [
-                  ChoiceChip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text('${strings.allCategory} (${allCustomers.length})'),
-                    selected: !_withDebtOnly,
-                    onSelected: (_) => setState(() => _withDebtOnly = false),
-                  ),
-                  ChoiceChip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text('${strings.withDebtFilter} ($debtCount)'),
-                    selected: _withDebtOnly,
-                    onSelected: (_) => setState(() => _withDebtOnly = true),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              if (filtered.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 28),
-                  child: Center(
-                    child: Text(
-                      allCustomers.isEmpty
-                          ? strings.noCustomersMsg
-                          : strings.noCustomersMatchMsg,
+        return SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.85,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${strings.customersBtn} (${allCustomers.length})',
+                        style: Theme.of(context).textTheme.titleLarge,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonalIcon(
+                      onPressed: () => _openCustomerForm(),
+                      icon: const Icon(Icons.person_add_alt_1, size: 18),
+                      label: Text(strings.addCustomerBtn),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _searchController,
+                  onChanged: (v) => setState(() => _query = v),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: strings.searchCustomersHint,
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _query.isNotEmpty
+                        ? IconButton(
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _query = '');
+                            },
+                            icon: const Icon(Icons.clear),
+                          )
+                        : null,
                   ),
-                )
-              else
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(context).size.height * 0.52,
-                  ),
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: filtered.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    ChoiceChip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text('${strings.allCategory} (${allCustomers.length})'),
+                      selected: !_withDebtOnly,
+                      onSelected: (_) => setState(() => _withDebtOnly = false),
+                    ),
+                    ChoiceChip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text('${strings.withDebtFilter} ($debtCount)'),
+                      selected: _withDebtOnly,
+                      onSelected: (_) => setState(() => _withDebtOnly = true),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: filtered.isEmpty
+                      ? Center(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            child: Text(
+                              allCustomers.isEmpty
+                                  ? strings.noCustomersMsg
+                                  : strings.noCustomersMatchMsg,
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: filtered.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 6),
+                          itemBuilder: (context, index) {
                       final customer = filtered[index].customer;
                       final stats = filtered[index].stats;
                       final initial = customer.name.trim().isNotEmpty
@@ -167,8 +169,17 @@ class _CustomersSheetState extends State<CustomersSheet> {
 
                       return Card(
                         margin: EdgeInsets.zero,
-                        child: ListTile(
-                          onTap: () => _openCustomerForm(existing: customer),
+                        child: ExpansionTile(
+                          tilePadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          childrenPadding: const EdgeInsets.fromLTRB(
+                            12,
+                            0,
+                            12,
+                            12,
+                          ),
                           leading: CircleAvatar(
                             child: Text(initial),
                           ),
@@ -244,12 +255,77 @@ class _CustomersSheetState extends State<CustomersSheet> {
                               ),
                             ],
                           ),
+                          children: [
+                            Builder(
+                              builder: (_) {
+                                final customerSales = widget.controller
+                                    .salesForCustomer(customer.name);
+                                if (customerSales.isEmpty) {
+                                  return Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 6),
+                                    child: Text(
+                                      strings.noAnalyticsData,
+                                      style:
+                                          Theme.of(context).textTheme.bodySmall,
+                                    ),
+                                  );
+                                }
+                                return Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    for (final sale in customerSales) ...[
+                                      const Divider(height: 10),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              '${formatDateTime(sale.createdAt)} • ${sale.isSplitPayment ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)}' : strings.paymentMethodLabel(sale.paymentMethod.name)}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelMedium
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                            ),
+                                          ),
+                                          Text(
+                                            formatMoney(sale.total, currency),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .labelMedium
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        sale.items
+                                            .map((i) =>
+                                                '${i.productName} × ${i.quantity}')
+                                            .join(', '),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
+                                      ),
+                                    ],
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
                         ),
                       );
                     },
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
         );
       },

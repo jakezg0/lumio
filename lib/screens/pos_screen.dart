@@ -7,6 +7,7 @@ import '../models/sale.dart';
 import '../state/shop_controller.dart';
 import '../widgets/currency_calculator_dialog.dart';
 import '../widgets/formatters.dart';
+import '../widgets/product_form_sheet.dart';
 import '../widgets/receipt_sheet.dart';
 import '../widgets/settings_button.dart';
 import 'barcode_scanner_screen.dart';
@@ -181,7 +182,8 @@ class _PosScreenState extends State<PosScreen> {
         message: strings.skuNotFoundMsg(code.trim()),
       );
     }
-    if (product.stock <= 0) {
+    final allowNegative = widget.controller.canSellNegativeStock;
+    if (!allowNegative && product.stock <= 0) {
       return ScanBatchFeedback(
         found: false,
         message: strings.outOfStockMsg(product.name),
@@ -195,7 +197,7 @@ class _PosScreenState extends State<PosScreen> {
       product.boxBarcode,
     );
     final existing = widget.controller.cartQuantityFor(product.id);
-    if (existing + delta > product.stock) {
+    if (!allowNegative && existing + delta > product.stock) {
       return ScanBatchFeedback(
         found: false,
         message: strings.onlyLeftMsg(product.stock),
@@ -231,7 +233,8 @@ class _PosScreenState extends State<PosScreen> {
       return;
     }
 
-    if (product.stock <= 0) {
+    final allowNegative = widget.controller.canSellNegativeStock;
+    if (!allowNegative && product.stock <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.outOfStockMsg(product.name))),
       );
@@ -246,7 +249,7 @@ class _PosScreenState extends State<PosScreen> {
       product.boxBarcode,
     );
     final existing = widget.controller.cartQuantityFor(product.id);
-    if (existing + delta > product.stock) {
+    if (!allowNegative && existing + delta > product.stock) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.onlyLeftMsg(product.stock))),
       );
@@ -353,7 +356,7 @@ class _PosScreenState extends State<PosScreen> {
       ),
     );
     if (entered == null || !mounted) return;
-    if (entered > product.stock) {
+    if (!widget.controller.canSellNegativeStock && entered > product.stock) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.onlyLeftMsg(product.stock))),
       );
@@ -435,6 +438,7 @@ class _PosScreenState extends State<PosScreen> {
         final isCashier = widget.controller.cashierMode;
 
         return Scaffold(
+          resizeToAvoidBottomInset: false,
           appBar: AppBar(
             title: Text(strings.recordSaleTitle),
             actions: [
@@ -585,7 +589,12 @@ class _PosScreenState extends State<PosScreen> {
                     : products.isEmpty
                         ? Center(child: Text(strings.noMatchingProducts))
                         : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                            padding: EdgeInsets.fromLTRB(
+                              16,
+                              4,
+                              16,
+                              16 + MediaQuery.viewInsetsOf(context).bottom,
+                            ),
                             itemCount: products.length,
                             separatorBuilder: (_, _) =>
                                 const SizedBox(height: 8),
@@ -593,12 +602,21 @@ class _PosScreenState extends State<PosScreen> {
                               final product = products[index];
                               final inCart =
                                   widget.controller.cartQuantityFor(product.id);
-                              final canAdd =
-                                  product.stock > 0 && inCart < product.stock;
+                              final canAdd = widget.controller.canSellNegativeStock ||
+                                  (product.stock > 0 && inCart < product.stock);
 
                               return Card(
                                 margin: EdgeInsets.zero,
+                                color: inCart > 0
+                                    ? Theme.of(context)
+                                        .colorScheme
+                                        .primaryContainer
+                                        .withValues(alpha: 0.25)
+                                    : null,
                                 child: ListTile(
+                                  onTap: canAdd
+                                      ? () => _addProductToCart(product)
+                                      : null,
                                   title: GestureDetector(
                                     onLongPress: () async {
                                       await Clipboard.setData(
@@ -688,20 +706,19 @@ class _PosScreenState extends State<PosScreen> {
                                             ),
                                           ],
                                         )
-                                      : FilledButton.tonalIcon(
-                                          onPressed: canAdd
-                                              ? () =>
-                                                  _addProductToCart(product)
-                                              : null,
-                                          icon: const Icon(
-                                            Icons.add_shopping_cart,
-                                          ),
-                                          label: Text(
-                                            product.stock <= 0
-                                                ? strings.outShort
-                                                : strings.addShort,
-                                          ),
-                                        ),
+                                      : (product.stock <= 0
+                                          ? Text(
+                                              strings.outShort,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelMedium
+                                                  ?.copyWith(
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .error,
+                                                  ),
+                                            )
+                                          : null),
                                 ),
                               );
                             },
@@ -787,6 +804,7 @@ class _CheckoutSheet extends StatefulWidget {
 
 class _CheckoutSheetState extends State<_CheckoutSheet> {
   final TextEditingController _customerController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _discountController =
       TextEditingController(text: '0');
   final TextEditingController _paidNowController =
@@ -798,10 +816,12 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
   PaymentMethod _secondaryMethod = PaymentMethod.kaspiQr;
   DateTime? _dueDate;
   String? _customerError;
+  String? _phoneError;
 
   @override
   void dispose() {
     _customerController.dispose();
+    _phoneController.dispose();
     _discountController.dispose();
     _paidNowController.dispose();
     _cashReceivedController.dispose();
@@ -844,12 +864,41 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
     }
   }
 
+  Future<void> _openAddProductPicker() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _AddProductToCheckoutSheet(controller: widget.controller),
+    );
+  }
+
+  void _syncPhoneForCustomer(String name) {
+    final knownPhone = widget.controller.customerPhoneByName(name);
+    if (knownPhone.isNotEmpty) {
+      _phoneController.text = knownPhone;
+      _phoneError = null;
+    }
+  }
+
   Future<void> _completeSale() async {
     final strings = widget.controller.strings;
-    if (_paymentMethod == PaymentMethod.postPay &&
-        _customerController.text.trim().isEmpty) {
-      setState(() => _customerError = strings.enterCustomerName);
-      return;
+    if (_paymentMethod == PaymentMethod.postPay) {
+      var hasError = false;
+      if (_customerController.text.trim().isEmpty) {
+        _customerError = strings.enterCustomerName;
+        hasError = true;
+      }
+      final digitsCount =
+          _phoneController.text.replaceAll(RegExp(r'[^0-9+]'), '').length;
+      if (digitsCount < 5) {
+        _phoneError = strings.enterCustomerPhone;
+        hasError = true;
+      }
+      if (hasError) {
+        setState(() {});
+        return;
+      }
     }
 
     final total = (widget.controller.cartSubtotal - _discount)
@@ -866,6 +915,7 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
           : null,
       secondaryAmount: secondaryAmount,
       customerName: _customerController.text,
+      customerPhone: _phoneController.text,
       discount: _discount,
       paidAmount: _paymentMethod == PaymentMethod.postPay ? _paidNow : null,
       dueDate: _paymentMethod == PaymentMethod.postPay ? _dueDate : null,
@@ -945,14 +995,16 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              '${formatMoney(line.unitPrice, currency)} × ${line.quantity} = ${formatMoney(line.lineTotal, currency)}',
-                              style: line.hasCustomPrice
-                                  ? TextStyle(
-                                      color: Theme.of(context).colorScheme.primary,
-                                      fontWeight: FontWeight.w600,
-                                    )
-                                  : null,
+                            Flexible(
+                              child: Text(
+                                '${formatMoney(line.unitPrice, currency)} × ${line.quantity} = ${formatMoney(line.lineTotal, currency)}',
+                                style: line.hasCustomPrice
+                                    ? TextStyle(
+                                        color: Theme.of(context).colorScheme.primary,
+                                        fontWeight: FontWeight.w600,
+                                      )
+                                    : null,
+                              ),
                             ),
                             const SizedBox(width: 4),
                             Icon(
@@ -993,7 +1045,8 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                               ),
                             );
                             if (entered == null || !mounted) return;
-                            if (entered > line.product.stock) {
+                            if (!widget.controller.canSellNegativeStock &&
+                                entered > line.product.stock) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text(
@@ -1030,7 +1083,8 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                           ),
                         ),
                         IconButton(
-                          onPressed: line.quantity < line.product.stock
+                          onPressed: (widget.controller.canSellNegativeStock ||
+                                  line.quantity < line.product.stock)
                               ? () => widget.controller.setCartQuantity(
                                     line.product.id,
                                     line.quantity + 1,
@@ -1041,6 +1095,16 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                       ],
                     ),
                   ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    onPressed: _openAddProductPicker,
+                    icon: const Icon(Icons.add_shopping_cart, size: 18),
+                    label: Text(strings.addProductToReceiptBtn),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 const Divider(),
                 Wrap(
                   spacing: 8,
@@ -1184,6 +1248,9 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                                   _customerController.text =
                                       selected ? name : '';
                                   _customerError = null;
+                                  if (selected) {
+                                    _syncPhoneForCustomer(name);
+                                  }
                                 });
                               },
                             ),
@@ -1195,11 +1262,12 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                 ],
                 TextField(
                   controller: _customerController,
-                  onChanged: (_) {
+                  onChanged: (val) {
                     setState(() {
                       if (_customerError != null) {
                         _customerError = null;
                       }
+                      _syncPhoneForCustomer(val);
                     });
                   },
                   decoration: InputDecoration(
@@ -1211,6 +1279,25 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                     isDense: true,
                   ),
                 ),
+                if (isPostPay) ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    onChanged: (_) {
+                      if (_phoneError != null) {
+                        setState(() => _phoneError = null);
+                      }
+                    },
+                    decoration: InputDecoration(
+                      labelText: strings.customerPhoneRequiredForDebt,
+                      errorText: _phoneError,
+                      prefixIcon: const Icon(Icons.phone_outlined, size: 18),
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 TextField(
                   controller: _discountController,
@@ -1460,15 +1547,17 @@ class _HoldSaleDialogState extends State<_HoldSaleDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _ctrl,
-        autofocus: true,
-        decoration: InputDecoration(
-          labelText: widget.hint,
-          border: const OutlineInputBorder(),
-          isDense: true,
+      content: SingleChildScrollView(
+        child: TextField(
+          controller: _ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: widget.hint,
+            border: const OutlineInputBorder(),
+            isDense: true,
+          ),
+          onSubmitted: (v) => Navigator.of(context).pop(v),
         ),
-        onSubmitted: (v) => Navigator.of(context).pop(v),
       ),
       actions: [
         TextButton(
@@ -1560,22 +1649,24 @@ class _PriceInputDialogState extends State<_PriceInputDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _ctrl,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          labelText: widget.label,
-          helperText: widget.helper,
-          border: const OutlineInputBorder(),
-          isDense: true,
-          suffixIcon: IconButton(
-            tooltip: widget.strings.currencyCalculatorTitle,
-            onPressed: _openCalculator,
-            icon: const Icon(Icons.calculate_outlined),
+      content: SingleChildScrollView(
+        child: TextField(
+          controller: _ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            labelText: widget.label,
+            helperText: widget.helper,
+            border: const OutlineInputBorder(),
+            isDense: true,
+            suffixIcon: IconButton(
+              tooltip: widget.strings.currencyCalculatorTitle,
+              onPressed: _openCalculator,
+              icon: const Icon(Icons.calculate_outlined),
+            ),
           ),
+          onSubmitted: (_) => _submit(),
         ),
-        onSubmitted: (_) => _submit(),
       ),
       actions: [
         TextButton(
@@ -1663,22 +1754,24 @@ class _QuantityInputDialogState extends State<_QuantityInputDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _ctrl,
-        autofocus: true,
-        keyboardType: TextInputType.number,
-        decoration: InputDecoration(
-          labelText: widget.label,
-          helperText: widget.helper,
-          border: const OutlineInputBorder(),
-          isDense: true,
-          suffixIcon: IconButton(
-            tooltip: widget.strings.currencyCalculatorTitle,
-            onPressed: _openCalculator,
-            icon: const Icon(Icons.calculate_outlined),
+      content: SingleChildScrollView(
+        child: TextField(
+          controller: _ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: widget.label,
+            helperText: widget.helper,
+            border: const OutlineInputBorder(),
+            isDense: true,
+            suffixIcon: IconButton(
+              tooltip: widget.strings.currencyCalculatorTitle,
+              onPressed: _openCalculator,
+              icon: const Icon(Icons.calculate_outlined),
+            ),
           ),
+          onSubmitted: (_) => _submit(),
         ),
-        onSubmitted: (_) => _submit(),
       ),
       actions: [
         TextButton(
@@ -1786,6 +1879,361 @@ class _HeldSalesSheet extends StatelessWidget {
                   ),
                 ),
             ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AddProductToCheckoutSheet extends StatefulWidget {
+  const _AddProductToCheckoutSheet({required this.controller});
+
+  final ShopController controller;
+
+  @override
+  State<_AddProductToCheckoutSheet> createState() =>
+      _AddProductToCheckoutSheetState();
+}
+
+class _AddProductToCheckoutSheetState extends State<_AddProductToCheckoutSheet> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  String _normalize(String input) {
+    return input
+        .toLowerCase()
+        .replaceAll('ё', 'е')
+        .replaceAll('×', 'x')
+        .replaceAll('х', 'x')
+        .replaceAll('*', 'x')
+        .replaceAll(',', '.');
+  }
+
+  String _compact(String normalized) {
+    return normalized.replaceAll(RegExp(r'[\\s\\-_/]+'), '');
+  }
+
+  List<Product> _filteredProducts() {
+    final normQuery = _normalize(_query.trim());
+    final tokens = normQuery
+        .split(RegExp(r'\\s+'))
+        .where((t) => t.isNotEmpty)
+        .toList();
+    final matches = widget.controller.products.where((product) {
+      if (tokens.isEmpty) return true;
+      final haystack = _normalize(
+        [
+          product.name,
+          product.category,
+          product.sku,
+          product.nomenclature,
+          product.printName,
+          product.packBarcode,
+          product.boxBarcode,
+        ].join(' '),
+      );
+      final compactHaystack = _compact(haystack);
+      return tokens.every((t) {
+        if (haystack.contains(t)) return true;
+        final compactT = _compact(t);
+        return compactT.isNotEmpty && compactHaystack.contains(compactT);
+      });
+    }).toList();
+
+    matches.sort((a, b) {
+      final aInStock = a.stock > 0 ? 1 : 0;
+      final bInStock = b.stock > 0 ? 1 : 0;
+      if (aInStock != bInStock) return bInStock.compareTo(aInStock);
+      if (tokens.isNotEmpty) {
+        final aName = _normalize(a.name);
+        final bName = _normalize(b.name);
+        final aStarts = aName.startsWith(normQuery) ? 1 : 0;
+        final bStarts = bName.startsWith(normQuery) ? 1 : 0;
+        if (aStarts != bStarts) return bStarts.compareTo(aStarts);
+      }
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+    return matches;
+  }
+
+  void _addOne(Product product) {
+    final strings = widget.controller.strings;
+    final ok = widget.controller.addToCart(product.id);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            product.stock <= 0
+                ? strings.outOfStockMsg(product.name)
+                : strings.onlyLeftMsg(product.stock),
+          ),
+        ),
+      );
+    }
+  }
+
+  void _handleSubmitted(String raw) {
+    final code = raw.trim();
+    if (code.isEmpty) return;
+    final product = widget.controller.findProductBySku(code);
+    if (product != null) {
+      _addOne(product);
+      setState(() {
+        _searchController.clear();
+        _query = '';
+      });
+    }
+  }
+
+  Future<void> _openScanner() async {
+    final strings = widget.controller.strings;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => BarcodeScannerScreen(
+          strings: strings,
+          onContinuousScan: (code) {
+            final product = widget.controller.findProductBySku(code);
+            if (product == null) {
+              return ScanBatchFeedback(
+                found: false,
+                message: strings.skuNotFoundMsg(code.trim()),
+              );
+            }
+            final allowNegative = widget.controller.canSellNegativeStock;
+            if (!allowNegative && product.stock <= 0) {
+              return ScanBatchFeedback(
+                found: false,
+                message: strings.outOfStockMsg(product.name),
+              );
+            }
+            final existing = widget.controller.cartQuantityFor(product.id);
+            if (!allowNegative && existing + 1 > product.stock) {
+              return ScanBatchFeedback(
+                found: false,
+                message: strings.onlyLeftMsg(product.stock),
+              );
+            }
+            widget.controller.addToCart(product.id);
+            return ScanBatchFeedback(
+              found: true,
+              message: strings.scannedAddedToCartMsg(
+                1,
+                product.name,
+                existing + 1,
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createNewProduct() async {
+    final created = await showModalBottomSheet<Product>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => ProductFormSheet(
+        controller: widget.controller,
+        initialName: _query.trim().isEmpty ? null : _query.trim(),
+        initialStock: 10,
+      ),
+    );
+    if (created != null && mounted) {
+      widget.controller.addToCart(created.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final sheetHeight = MediaQuery.sizeOf(context).height * 0.88;
+
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        final strings = widget.controller.strings;
+        final currency = widget.controller.currency;
+        final items = _filteredProducts();
+        final isCashier = widget.controller.cashierMode;
+
+        return SizedBox(
+          height: sheetHeight,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        strings.addProductToReceiptBtn,
+                        style: Theme.of(context).textTheme.titleLarge,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (!isCashier)
+                      TextButton.icon(
+                        onPressed: _createNewProduct,
+                        icon: const Icon(Icons.add, size: 18),
+                        label: Text(strings.addNewGood),
+                      ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: Text(strings.doneAction),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _searchController,
+                        autofocus: true,
+                        textInputAction: TextInputAction.search,
+                        onChanged: (v) => setState(() => _query = v),
+                        onSubmitted: _handleSubmitted,
+                        decoration: InputDecoration(
+                          hintText: strings.searchPosHint,
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _query.isNotEmpty
+                              ? IconButton(
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    setState(() => _query = '');
+                                  },
+                                  icon: const Icon(Icons.clear),
+                                )
+                              : null,
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(
+                      tooltip: strings.scanBarcodeTitle,
+                      onPressed: _openScanner,
+                      icon: const Icon(Icons.qr_code_scanner),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: items.isEmpty
+                      ? Center(
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(strings.noMatchingProducts),
+                                if (!isCashier) ...[
+                                  const SizedBox(height: 10),
+                                  FilledButton.tonalIcon(
+                                    onPressed: _createNewProduct,
+                                    icon: const Icon(Icons.add),
+                                    label: Text(strings.addNewGood),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: items.length,
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 6),
+                          itemBuilder: (_, index) {
+                            final product = items[index];
+                            final inCart =
+                                widget.controller.cartQuantityFor(product.id);
+                            final canAdd = widget.controller.canSellNegativeStock ||
+                                (product.stock > 0 && inCart < product.stock);
+                            return Card(
+                              margin: EdgeInsets.zero,
+                              color: inCart > 0
+                                  ? Theme.of(context)
+                                      .colorScheme
+                                      .primaryContainer
+                                      .withValues(alpha: 0.25)
+                                  : null,
+                              child: ListTile(
+                                onTap: canAdd ? () => _addOne(product) : null,
+                                title: Text(
+                                  product.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  '${formatMoney(product.sellPrice, currency)}  •  '
+                                  '${strings.stockCountLabel(product.stock)}'
+                                  '${inCart > 0 ? '  •  ${strings.inCartLabel(inCart)}' : ''}',
+                                ),
+                                trailing: inCart > 0
+                                    ? Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () => widget.controller
+                                                .setCartQuantity(
+                                              product.id,
+                                              inCart - 1,
+                                            ),
+                                            icon: const Icon(
+                                              Icons.remove_circle_outline,
+                                            ),
+                                          ),
+                                          Text(
+                                            '$inCart',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          IconButton(
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: canAdd
+                                                ? () => _addOne(product)
+                                                : null,
+                                            icon: const Icon(
+                                              Icons.add_circle_outline,
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : (product.stock <= 0
+                                        ? Text(
+                                            strings.outShort,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .labelMedium
+                                                ?.copyWith(
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .error,
+                                                ),
+                                          )
+                                        : null),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
           ),
         );
       },

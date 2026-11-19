@@ -1,15 +1,18 @@
+import 'dart:async' show Timer;
+import 'dart:convert' show jsonEncode;
 import 'dart:ui' show Locale, PlatformDispatcher;
 
 import 'package:flutter/foundation.dart';
 
-import '../data/initial_catalog.dart';
 import '../l10n/app_strings.dart';
 import '../models/customer.dart';
 import '../models/expense.dart';
 import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/stock_in.dart';
+import '../services/google_sheets_service.dart';
 import '../services/inventory_storage.dart';
+import '../services/sheet_export_helper.dart';
 
 enum SalesDateFilter {
   today,
@@ -40,14 +43,22 @@ class CartLine {
 class DebtorSummary {
   const DebtorSummary({
     required this.customerName,
+    this.phone = '',
     required this.sales,
+    this.allDebtSales = const [],
+    this.totalDebtPurchasesCount = 0,
+    this.repayments = const [],
     required this.totalDebt,
     this.earliestDueDate,
     required this.hasOverdue,
   });
 
   final String customerName;
+  final String phone;
   final List<Sale> sales;
+  final List<Sale> allDebtSales;
+  final int totalDebtPurchasesCount;
+  final List<({DateTime date, double amount, String receiptCode})> repayments;
   final double totalDebt;
   final DateTime? earliestDueDate;
   final bool hasOverdue;
@@ -164,12 +175,26 @@ class ShopController extends ChangeNotifier {
   String _shopPhone = '';
   String _receiptFooter = '';
   String _ownerPin = '';
-  bool _cashierMode = false;
+  bool _useBiometricUnlock = false;
+  bool _cashierMode = true;
+  bool _allowNegativeStock = true;
+  bool _autoBackupEnabled = true;
+  String _lastAutoBackupAt = '';
+  String _lastAutoBackupError = '';
+  final Map<String, String> _cloudBackupHashes = {};
+  Timer? _autoBackupTimer;
+  bool _autoBackupInProgress = false;
+  bool _autoBackupPending = false;
+  bool _suppressAutoBackup = false;
   bool _catalogSeeded = false;
+  String _googleSheetsUrl = '';
+  String _googleSheetsSecret = '';
   final List<String> _customCategories = [];
   StockInDraft? _stockInDraft;
   StocktakeDraft? _stocktakeDraft;
   final List<HeldSale> _heldSales = [];
+  final List<ProductChangeEntry> _productChanges = [];
+  final Map<String, int> _negativeStockReminders = {};
   bool _isLoaded = false;
   int _idCounter = 0;
 
@@ -184,7 +209,17 @@ class ShopController extends ChangeNotifier {
   String get receiptFooter => _receiptFooter;
   String get ownerPin => _ownerPin;
   bool get hasOwnerPin => _ownerPin.isNotEmpty;
+  bool get useBiometricUnlock => _useBiometricUnlock;
+  bool get hasOwnerAuth => _ownerPin.isNotEmpty || _useBiometricUnlock;
   bool get cashierMode => _cashierMode;
+  bool get allowNegativeStock => _allowNegativeStock;
+  bool get canSellNegativeStock => _allowNegativeStock && !_cashierMode;
+  bool get autoBackupEnabled => _autoBackupEnabled;
+  String get lastAutoBackupAt => _lastAutoBackupAt;
+  bool get autoBackupInProgress => _autoBackupInProgress;
+  String get lastAutoBackupError => _lastAutoBackupError;
+  String get googleSheetsUrl => _googleSheetsUrl;
+  String get googleSheetsSecret => _googleSheetsSecret;
 
   List<Product> get products =>
       _products.where((p) => p.isActive).toList(growable: false);
@@ -246,6 +281,8 @@ class ShopController extends ChangeNotifier {
   bool get hasStocktakeDraft =>
       _stocktakeDraft != null && _stocktakeDraft!.hasContent;
   List<HeldSale> get heldSales => List.unmodifiable(_heldSales);
+  List<ProductChangeEntry> get productChanges =>
+      List.unmodifiable(_productChanges);
 
   int get archiveCount => archivedProducts.length + archivedSales.length;
   int get trashCount =>
@@ -259,17 +296,7 @@ class ShopController extends ChangeNotifier {
   Future<void> initialize() async {
     final snapshot = await _storage.load();
     _applySnapshot(snapshot);
-    final isFreshInstall = !_catalogSeeded &&
-        _products.isEmpty &&
-        _sales.isEmpty &&
-        _expenses.isEmpty &&
-        _customers.isEmpty &&
-        _stockIns.isEmpty;
-    if (isFreshInstall) {
-      _products.addAll(buildInitialCatalog());
-      _catalogSeeded = true;
-      await _persist();
-    } else if (!_catalogSeeded) {
+    if (!_catalogSeeded) {
       _catalogSeeded = true;
       await _persist();
     }
@@ -313,7 +340,16 @@ class ShopController extends ChangeNotifier {
     _shopPhone = snapshot.shopPhone;
     _receiptFooter = snapshot.receiptFooter;
     _ownerPin = snapshot.ownerPin;
+    _useBiometricUnlock = snapshot.useBiometricUnlock;
     _cashierMode = snapshot.cashierMode;
+    _allowNegativeStock = snapshot.allowNegativeStock;
+    _autoBackupEnabled = snapshot.autoBackupEnabled;
+    _lastAutoBackupAt = snapshot.lastAutoBackupAt;
+    _cloudBackupHashes
+      ..clear()
+      ..addAll(snapshot.cloudBackupHashes);
+    _googleSheetsUrl = snapshot.googleSheetsUrl;
+    _googleSheetsSecret = snapshot.googleSheetsSecret;
     _catalogSeeded = snapshot.catalogSeeded ||
         _products.isNotEmpty ||
         _sales.isNotEmpty ||
@@ -333,6 +369,17 @@ class ShopController extends ChangeNotifier {
       ..clear()
       ..addAll(snapshot.heldSales);
     _heldSales.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final twoYearsAgo = DateTime.now().subtract(const Duration(days: 730));
+    _productChanges
+      ..clear()
+      ..addAll(
+        snapshot.productChanges.where((e) => !e.createdAt.isBefore(twoYearsAgo)),
+      );
+    _productChanges.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _negativeStockReminders
+      ..clear()
+      ..addAll(snapshot.negativeStockReminders);
+    _pruneResolvedNegativeReminders();
   }
 
   ShopDataSnapshot createBackupSnapshot() {
@@ -349,12 +396,21 @@ class ShopController extends ChangeNotifier {
       shopPhone: _shopPhone,
       receiptFooter: _receiptFooter,
       ownerPin: _ownerPin,
+      useBiometricUnlock: _useBiometricUnlock,
       cashierMode: _cashierMode,
       catalogSeeded: _catalogSeeded,
+      googleSheetsUrl: _googleSheetsUrl,
+      googleSheetsSecret: _googleSheetsSecret,
       customCategories: List.unmodifiable(_customCategories),
       stockInDraft: _stockInDraft,
       stocktakeDraft: _stocktakeDraft,
       heldSales: List.unmodifiable(_heldSales),
+      productChanges: List.unmodifiable(_productChanges),
+      negativeStockReminders: Map.unmodifiable(_negativeStockReminders),
+      allowNegativeStock: _allowNegativeStock,
+      autoBackupEnabled: _autoBackupEnabled,
+      lastAutoBackupAt: _lastAutoBackupAt,
+      cloudBackupHashes: Map.unmodifiable(_cloudBackupHashes),
     );
   }
 
@@ -393,10 +449,9 @@ class ShopController extends ChangeNotifier {
     _cartCustomPrices.clear();
     for (final entry in held.quantities.entries) {
       final product = findProductById(entry.key);
-      if (product == null || !product.isActive || product.stock <= 0) continue;
-      final qty = entry.value > product.stock ? product.stock : entry.value;
-      if (qty > 0) {
-        _cart[product.id] = qty;
+      if (product == null || !product.isActive) continue;
+      if (entry.value > 0) {
+        _cart[product.id] = entry.value;
       }
     }
     notifyListeners();
@@ -475,15 +530,267 @@ class ShopController extends ChangeNotifier {
   }
 
   Future<void> restoreFromSnapshot(ShopDataSnapshot snapshot) async {
+    final prevUrl = _googleSheetsUrl;
+    final prevSecret = _googleSheetsSecret;
     _applySnapshot(snapshot);
+    if (_googleSheetsUrl.isEmpty && prevUrl.isNotEmpty) {
+      _googleSheetsUrl = prevUrl;
+    }
+    if (_googleSheetsSecret.isEmpty && prevSecret.isNotEmpty) {
+      _googleSheetsSecret = prevSecret;
+    }
     _cart.clear();
     _cartCustomPrices.clear();
+    notifyListeners();
+    _suppressAutoBackup = true;
+    try {
+      await _persist();
+    } finally {
+      _suppressAutoBackup = false;
+    }
+  }
+
+  List<({Product product, int remaining})> get activeNegativeStockReminders {
+    final result = <({Product product, int remaining})>[];
+    for (final entry in _negativeStockReminders.entries) {
+      if (entry.value <= 0) continue;
+      final product = findProductById(entry.key);
+      if (product != null && product.isActive && product.stock < 0) {
+        result.add((product: product, remaining: entry.value));
+      }
+    }
+    return result;
+  }
+
+  int get negativeStockProductsCount =>
+      products.where((p) => p.stock < 0).length;
+
+  void _pruneResolvedNegativeReminders() {
+    _negativeStockReminders.removeWhere((id, remaining) {
+      if (remaining <= 0) return true;
+      final p = findProductById(id);
+      return p == null || !p.isActive || p.stock >= 0;
+    });
+  }
+
+  bool _openStockInRequested = false;
+  bool get openStockInRequested => _openStockInRequested;
+
+  void requestOpenStockIn() {
+    _openStockInRequested = true;
+    notifyListeners();
+  }
+
+  void clearOpenStockInRequest() {
+    _openStockInRequested = false;
+  }
+
+  Future<int> prepareStockInForNegativeProducts() async {
+    final negativeProducts = products.where((p) => p.stock < 0).toList();
+    if (negativeProducts.isEmpty) return 0;
+
+    final existing = _stockInDraft;
+    final quantities = Map<String, int>.from(existing?.quantities ?? const {});
+    final unitCosts = Map<String, double>.from(existing?.unitCosts ?? const {});
+    final sellPrices = Map<String, double>.from(existing?.sellPrices ?? const {});
+
+    for (final p in negativeProducts) {
+      final needed = -p.stock;
+      final current = quantities[p.id] ?? 0;
+      if (current < needed) {
+        quantities[p.id] = needed;
+      }
+      unitCosts.putIfAbsent(p.id, () => p.costPrice);
+      sellPrices.putIfAbsent(p.id, () => p.sellPrice);
+    }
+
+    await saveStockInDraft(
+      StockInDraft(
+        supplierName: existing?.supplierName ?? '',
+        recordAsExpense: true,
+        quantities: quantities,
+        unitCosts: unitCosts,
+        sellPrices: sellPrices,
+      ),
+    );
+    return negativeProducts.length;
+  }
+
+  Future<void> acknowledgeNegativeStockReminders() async {
+    _pruneResolvedNegativeReminders();
+    if (_negativeStockReminders.isEmpty) return;
+    final keys = _negativeStockReminders.keys.toList();
+    for (final id in keys) {
+      final next = (_negativeStockReminders[id] ?? 0) - 1;
+      if (next <= 0) {
+        _negativeStockReminders.remove(id);
+      } else {
+        _negativeStockReminders[id] = next;
+      }
+    }
     notifyListeners();
     await _persist();
   }
 
   Future<void> _persist() async {
+    _pruneResolvedNegativeReminders();
     await _storage.save(createBackupSnapshot());
+    if (!_suppressAutoBackup &&
+        _autoBackupEnabled &&
+        _googleSheetsUrl.trim().isNotEmpty) {
+      _scheduleAutoBackup();
+    }
+  }
+
+  void _scheduleAutoBackup() {
+    _autoBackupTimer?.cancel();
+    _autoBackupTimer = Timer(const Duration(seconds: 4), () {
+      _runAutoBackupSilently();
+    });
+  }
+
+  void flushAutoBackupIfPending() {
+    if (_autoBackupTimer?.isActive == true) {
+      _autoBackupTimer?.cancel();
+      _runAutoBackupSilently();
+    }
+  }
+
+  Future<void> _runAutoBackupSilently() async {
+    if (!_autoBackupEnabled || _googleSheetsUrl.trim().isEmpty) return;
+    if (_autoBackupInProgress) {
+      _autoBackupPending = true;
+      return;
+    }
+    _autoBackupInProgress = true;
+    _lastAutoBackupError = '';
+    notifyListeners();
+    try {
+      await syncCloudBackupDelta(forceFull: false);
+    } catch (e) {
+      _lastAutoBackupError = '$e';
+    } finally {
+      _autoBackupInProgress = false;
+      notifyListeners();
+      if (_autoBackupPending) {
+        _autoBackupPending = false;
+        _scheduleAutoBackup();
+      }
+    }
+  }
+
+  Future<int> syncCloudBackupDelta({
+    bool forceFull = false,
+    bool syncReadableSheets = true,
+  }) async {
+    final url = _googleSheetsUrl.trim();
+    if (url.isEmpty) return 0;
+    final snapshot = createBackupSnapshot();
+    final prevBackupHashes = forceFull
+        ? const <String, String>{}
+        : Map<String, String>.fromEntries(
+            _cloudBackupHashes.entries
+                .where((e) => !e.key.startsWith('sheet_')),
+          );
+    final prepared = await compute(
+      _prepareCloudBackupDelta,
+      (snapshot: snapshot, prevHashes: prevBackupHashes, forceFull: forceFull),
+    );
+
+    const service = GoogleSheetsService();
+    var totalUpdated = 0;
+
+    final hasBackupChanges = forceFull ||
+        prepared.changedCompressed.isNotEmpty ||
+        prepared.removedSections.isNotEmpty;
+    if (hasBackupChanges) {
+      final sentBackup = await service.pushBackupDelta(
+        webAppUrl: url,
+        changedCompressedSections: prepared.changedCompressed,
+        removedSections: prepared.removedSections,
+        resetAll: forceFull,
+        secret: _googleSheetsSecret,
+      );
+      totalUpdated += sentBackup;
+      _cloudBackupHashes.removeWhere((k, _) => !k.startsWith('sheet_'));
+      _cloudBackupHashes.addAll(prepared.newHashes);
+    }
+
+    final productHashParts = prepared.newHashes.entries
+        .where((e) => e.key.startsWith('products_'))
+        .toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    final catalogHash = GoogleSheetsService.hashText(
+      productHashParts.map((e) => '${e.key}:${e.value}').join('|'),
+    );
+
+    if (syncReadableSheets) {
+      if (forceFull || _cloudBackupHashes['sheet_catalog'] != catalogHash) {
+        if (totalUpdated > 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+        await service.pushProducts(
+          url,
+          products,
+          secret: _googleSheetsSecret,
+        );
+        _cloudBackupHashes['sheet_catalog'] = catalogHash;
+        totalUpdated += 1;
+      }
+
+      for (final section in SheetExportSection.values) {
+        final table = SheetExportHelper.buildTable(section, this);
+        final tableHash = GoogleSheetsService.hashText(jsonEncode(table.rows));
+        final hashKey = 'sheet_${section.name}';
+        if (forceFull || _cloudBackupHashes[hashKey] != tableHash) {
+          if (totalUpdated > 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 250));
+          }
+          await service.pushTable(
+            webAppUrl: url,
+            sheetName: SheetExportHelper.defaultTabName(section, strings),
+            headers: table.headers,
+            rows: table.rows,
+            secret: _googleSheetsSecret,
+          );
+          _cloudBackupHashes[hashKey] = tableHash;
+          totalUpdated += 1;
+        }
+      }
+    } else {
+      _cloudBackupHashes['sheet_catalog'] = catalogHash;
+      for (final section in SheetExportSection.values) {
+        final table = SheetExportHelper.buildTable(section, this);
+        _cloudBackupHashes['sheet_${section.name}'] =
+            GoogleSheetsService.hashText(jsonEncode(table.rows));
+      }
+    }
+
+    _lastAutoBackupError = '';
+    if (totalUpdated > 0 || forceFull) {
+      _lastAutoBackupAt = DateTime.now().toIso8601String();
+      notifyListeners();
+      _suppressAutoBackup = true;
+      try {
+        await _storage.save(createBackupSnapshot());
+      } finally {
+        _suppressAutoBackup = false;
+      }
+    }
+    return totalUpdated;
+  }
+
+  Future<void> setAutoBackupEnabled(bool value) async {
+    if (_autoBackupEnabled == value) return;
+    _autoBackupEnabled = value;
+    notifyListeners();
+    await _persist();
+  }
+
+  @override
+  void dispose() {
+    _autoBackupTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> setLanguage(AppLanguage language) async {
@@ -541,9 +848,23 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
+  Future<void> setUseBiometricUnlock(bool value) async {
+    if (_useBiometricUnlock == value) return;
+    _useBiometricUnlock = value;
+    notifyListeners();
+    await _persist();
+  }
+
   Future<void> enterCashierMode() async {
     if (_cashierMode) return;
     _cashierMode = true;
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> unlockOwnerByBiometrics() async {
+    if (!_cashierMode) return;
+    _cashierMode = false;
     notifyListeners();
     await _persist();
   }
@@ -556,6 +877,402 @@ class ShopController extends ChangeNotifier {
     notifyListeners();
     await _persist();
     return true;
+  }
+
+  Future<void> setAllowNegativeStock(bool value) async {
+    if (_allowNegativeStock == value) return;
+    _allowNegativeStock = value;
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> setGoogleSheetsConfig({
+    required String url,
+    required String secret,
+  }) async {
+    _googleSheetsUrl = url.trim();
+    _googleSheetsSecret = secret.trim();
+    notifyListeners();
+    await _persist();
+  }
+
+  String _fmtNum(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
+  void _recordProductChange(Product before, Product after, String source) {
+    final fields = <ProductChangeField>[];
+    if ((before.sellPrice - after.sellPrice).abs() > 0.009) {
+      fields.add(
+        ProductChangeField(
+          key: 'sellPrice',
+          kind: 'price',
+          label: strings.sellShort,
+          oldValue: _fmtNum(before.sellPrice),
+          newValue: _fmtNum(after.sellPrice),
+        ),
+      );
+    }
+    if ((before.costPrice - after.costPrice).abs() > 0.009) {
+      fields.add(
+        ProductChangeField(
+          key: 'costPrice',
+          kind: 'price',
+          label: strings.costShort,
+          oldValue: _fmtNum(before.costPrice),
+          newValue: _fmtNum(after.costPrice),
+        ),
+      );
+    }
+    if (before.stock != after.stock) {
+      fields.add(
+        ProductChangeField(
+          key: 'stock',
+          kind: 'stock',
+          label: strings.stockQtyRequired.replaceAll(' *', ''),
+          oldValue: '${before.stock}',
+          newValue: '${after.stock}',
+        ),
+      );
+    }
+    if (before.unitWeight.trim() != after.unitWeight.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'unitWeight',
+          kind: 'weight',
+          label: strings.unitWeightLabel,
+          oldValue: before.unitWeight.trim().isEmpty ? '—' : before.unitWeight.trim(),
+          newValue: after.unitWeight.trim().isEmpty ? '—' : after.unitWeight.trim(),
+        ),
+      );
+    }
+    if (before.name.trim() != after.name.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'name',
+          kind: 'other',
+          label: strings.productNameRequired.replaceAll(' *', ''),
+          oldValue: before.name,
+          newValue: after.name,
+        ),
+      );
+    }
+    if (before.category.trim() != after.category.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'category',
+          kind: 'other',
+          label: strings.categoryLabel,
+          oldValue: before.category,
+          newValue: after.category,
+        ),
+      );
+    }
+    if (before.sku.trim() != after.sku.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'sku',
+          kind: 'other',
+          label: strings.skuLabel,
+          oldValue: before.sku.trim().isEmpty ? '—' : before.sku.trim(),
+          newValue: after.sku.trim().isEmpty ? '—' : after.sku.trim(),
+        ),
+      );
+    }
+    if (before.lowStockThreshold != after.lowStockThreshold) {
+      fields.add(
+        ProductChangeField(
+          key: 'lowStockThreshold',
+          kind: 'other',
+          label: strings.lowStockAlertLabel,
+          oldValue: '${before.lowStockThreshold}',
+          newValue: '${after.lowStockThreshold}',
+        ),
+      );
+    }
+    if (before.unit.trim() != after.unit.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'unit',
+          kind: 'other',
+          label: strings.unitMeasureLabel,
+          oldValue: before.unit.trim().isEmpty ? '—' : before.unit.trim(),
+          newValue: after.unit.trim().isEmpty ? '—' : after.unit.trim(),
+        ),
+      );
+    }
+    if (before.packQty.trim() != after.packQty.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'packQty',
+          kind: 'other',
+          label: strings.packQtyLabel,
+          oldValue: before.packQty.trim().isEmpty ? '—' : before.packQty.trim(),
+          newValue: after.packQty.trim().isEmpty ? '—' : after.packQty.trim(),
+        ),
+      );
+    }
+    if (before.boxQty.trim() != after.boxQty.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'boxQty',
+          kind: 'other',
+          label: strings.boxQtyLabel,
+          oldValue: before.boxQty.trim().isEmpty ? '—' : before.boxQty.trim(),
+          newValue: after.boxQty.trim().isEmpty ? '—' : after.boxQty.trim(),
+        ),
+      );
+    }
+    if (before.packBarcode.trim() != after.packBarcode.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'packBarcode',
+          kind: 'other',
+          label: strings.packBarcodeLabel,
+          oldValue: before.packBarcode.trim().isEmpty ? '—' : before.packBarcode.trim(),
+          newValue: after.packBarcode.trim().isEmpty ? '—' : after.packBarcode.trim(),
+        ),
+      );
+    }
+    if (before.boxBarcode.trim() != after.boxBarcode.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'boxBarcode',
+          kind: 'other',
+          label: strings.boxBarcodeLabel,
+          oldValue: before.boxBarcode.trim().isEmpty ? '—' : before.boxBarcode.trim(),
+          newValue: after.boxBarcode.trim().isEmpty ? '—' : after.boxBarcode.trim(),
+        ),
+      );
+    }
+    if (before.nomenclature.trim() != after.nomenclature.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'nomenclature',
+          kind: 'other',
+          label: strings.nomenclatureLabel,
+          oldValue: before.nomenclature.trim().isEmpty ? '—' : before.nomenclature.trim(),
+          newValue: after.nomenclature.trim().isEmpty ? '—' : after.nomenclature.trim(),
+        ),
+      );
+    }
+    if (before.printName.trim() != after.printName.trim()) {
+      fields.add(
+        ProductChangeField(
+          key: 'printName',
+          kind: 'other',
+          label: strings.printNameLabel,
+          oldValue: before.printName.trim().isEmpty ? '—' : before.printName.trim(),
+          newValue: after.printName.trim().isEmpty ? '—' : after.printName.trim(),
+        ),
+      );
+    }
+    if (fields.isEmpty) return;
+    _appendProductChange(
+      ProductChangeEntry(
+        id: _nextId('chg'),
+        productId: after.id,
+        productName: after.name,
+        source: source,
+        fields: fields,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  List<ProductChangeEntry> productChangesForDays(int days) {
+    final cutoff = DateTime.now().subtract(Duration(days: days));
+    return _productChanges
+        .where((e) => !e.createdAt.isBefore(cutoff))
+        .toList(growable: false);
+  }
+
+  void _appendProductChange(ProductChangeEntry entry) {
+    _productChanges.insert(0, entry);
+    final twoYearsAgo = DateTime.now().subtract(const Duration(days: 730));
+    _productChanges.removeWhere((e) => e.createdAt.isBefore(twoYearsAgo));
+  }
+
+  void _recordProductCreated(Product product, String source) {
+    _appendProductChange(
+      ProductChangeEntry(
+        id: _nextId('chg'),
+        productId: product.id,
+        productName: product.name,
+        source: source,
+        fields: [
+          ProductChangeField(
+            key: 'sellPrice',
+            kind: 'price',
+            label: strings.sellShort,
+            oldValue: '0',
+            newValue: _fmtNum(product.sellPrice),
+          ),
+          if (product.costPrice > 0)
+            ProductChangeField(
+              key: 'costPrice',
+              kind: 'price',
+              label: strings.costShort,
+              oldValue: '0',
+              newValue: _fmtNum(product.costPrice),
+            ),
+          ProductChangeField(
+            key: 'stock',
+            kind: 'stock',
+            label: strings.stockQtyRequired.replaceAll(' *', ''),
+            oldValue: '0',
+            newValue: '${product.stock}',
+          ),
+        ],
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  void _recordProductStatusChange(
+    Product product,
+    String oldStatus,
+    String newStatus,
+    String source,
+  ) {
+    _appendProductChange(
+      ProductChangeEntry(
+        id: _nextId('chg'),
+        productId: product.id,
+        productName: product.name,
+        source: source,
+        fields: [
+          ProductChangeField(
+            key: 'status',
+            kind: 'other',
+            label: strings.statusFieldLabel,
+            oldValue: oldStatus,
+            newValue: newStatus,
+          ),
+        ],
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<int> clearProductChanges({int? olderThanDays}) async {
+    final before = _productChanges.length;
+    if (olderThanDays == null) {
+      _productChanges.clear();
+    } else {
+      final cutoff = DateTime.now().subtract(Duration(days: olderThanDays));
+      _productChanges.removeWhere((e) => e.createdAt.isBefore(cutoff));
+    }
+    final removed = before - _productChanges.length;
+    if (removed > 0) {
+      notifyListeners();
+      await _persist();
+    }
+    return removed;
+  }
+
+  Future<bool> revertProductChange(String changeId) async {
+    final entryIdx = _productChanges.indexWhere((e) => e.id == changeId);
+    if (entryIdx == -1) return false;
+    final entry = _productChanges[entryIdx];
+    final productIdx = _products.indexWhere((p) => p.id == entry.productId);
+    if (productIdx == -1 || !_products[productIdx].isActive) return false;
+
+    final before = _products[productIdx];
+    var next = before;
+    for (final f in entry.fields) {
+      final rawOld = f.oldValue == '—' ? '' : f.oldValue;
+      final key = f.key.isNotEmpty ? f.key : _inferFieldKey(f);
+      switch (key) {
+        case 'sellPrice':
+          final v = double.tryParse(rawOld.replaceAll(',', '.'));
+          if (v != null && v >= 0) next = next.copyWith(sellPrice: v);
+        case 'costPrice':
+          final v = double.tryParse(rawOld.replaceAll(',', '.'));
+          if (v != null && v >= 0) next = next.copyWith(costPrice: v);
+        case 'stock':
+          final v = int.tryParse(rawOld);
+          if (v != null && v >= 0) next = next.copyWith(stock: v);
+        case 'unitWeight':
+          next = next.copyWith(unitWeight: rawOld);
+        case 'name':
+          if (rawOld.trim().isNotEmpty) next = next.copyWith(name: rawOld.trim());
+        case 'category':
+          if (rawOld.trim().isNotEmpty) next = next.copyWith(category: rawOld.trim());
+        case 'sku':
+          next = next.copyWith(sku: rawOld);
+        case 'lowStockThreshold':
+          final v = int.tryParse(rawOld);
+          if (v != null && v >= 0) next = next.copyWith(lowStockThreshold: v);
+        case 'unit':
+          next = next.copyWith(unit: rawOld);
+        case 'packQty':
+          next = next.copyWith(packQty: rawOld);
+        case 'boxQty':
+          next = next.copyWith(boxQty: rawOld);
+        case 'packBarcode':
+          next = next.copyWith(packBarcode: rawOld);
+        case 'boxBarcode':
+          next = next.copyWith(boxBarcode: rawOld);
+        case 'nomenclature':
+          next = next.copyWith(nomenclature: rawOld);
+        case 'printName':
+          next = next.copyWith(printName: rawOld);
+      }
+    }
+
+    next = next.copyWith(updatedAt: DateTime.now());
+    _products[productIdx] = next;
+    _recordProductChange(before, next, 'revert');
+    notifyListeners();
+    await _persist();
+    return true;
+  }
+
+  String _inferFieldKey(ProductChangeField f) {
+    if (f.label == strings.sellShort) return 'sellPrice';
+    if (f.label == strings.costShort) return 'costPrice';
+    if (f.kind == 'stock') return 'stock';
+    if (f.kind == 'weight') return 'unitWeight';
+    if (f.label == strings.categoryLabel) return 'category';
+    if (f.label == strings.skuLabel) return 'sku';
+    if (f.label == strings.lowStockAlertLabel) return 'lowStockThreshold';
+    if (f.label == strings.unitMeasureLabel) return 'unit';
+    if (f.label == strings.packQtyLabel) return 'packQty';
+    if (f.label == strings.boxQtyLabel) return 'boxQty';
+    if (f.label == strings.packBarcodeLabel) return 'packBarcode';
+    if (f.label == strings.boxBarcodeLabel) return 'boxBarcode';
+    if (f.label == strings.nomenclatureLabel) return 'nomenclature';
+    if (f.label == strings.printNameLabel) return 'printName';
+    if (f.label == strings.productNameRequired.replaceAll(' *', '')) return 'name';
+    return '';
+  }
+
+  Future<void> applySyncedProducts({
+    required List<Product> updatedProducts,
+    required List<Product> newProducts,
+  }) async {
+    final now = DateTime.now();
+    for (final updated in updatedProducts) {
+      final index = _products.indexWhere((p) => p.id == updated.id);
+      if (index != -1) {
+        final before = _products[index];
+        final next = updated.copyWith(updatedAt: now);
+        _products[index] = next;
+        _recordProductChange(before, next, 'sync');
+        if (!updated.isActive) {
+          _cart.remove(updated.id);
+          _cartCustomPrices.remove(updated.id);
+        }
+      }
+    }
+    for (final item in newProducts) {
+      final assignedId = item.id.trim().isEmpty ? _nextId('prd') : item.id.trim();
+      final created = item.copyWith(id: assignedId, updatedAt: now);
+      _products.insert(0, created);
+      _recordProductCreated(created, 'sync');
+    }
+    notifyListeners();
+    await _persist();
   }
 
   List<String> get categories {
@@ -615,13 +1332,45 @@ class ShopController extends ChangeNotifier {
   double get totalUnpaidDebt =>
       unpaidSales.fold(0.0, (sum, sale) => sum + sale.remainingDebt);
 
-  List<DebtorSummary> get debtors {
+  String customerPhoneByName(String name) {
+    final target = name.trim().toLowerCase();
+    if (target.isEmpty) return '';
+    for (final c in _customers) {
+      if (c.name.trim().toLowerCase() == target && c.phone.trim().isNotEmpty) {
+        return c.phone.trim();
+      }
+    }
+    for (final s in sales) {
+      if (s.customerName.trim().toLowerCase() == target &&
+          s.customerPhone.trim().isNotEmpty) {
+        return s.customerPhone.trim();
+      }
+    }
+    return '';
+  }
+
+  List<DebtorSummary> _buildDebtSummaries({required bool unpaidOnly}) {
+    final source = unpaidOnly
+        ? unpaidSales
+        : sales.where((s) => s.paymentMethod == PaymentMethod.postPay || !s.isPaid).toList();
     final grouped = <String, List<Sale>>{};
-    for (final sale in unpaidSales) {
-      final name = sale.customerName.trim().isEmpty
+    final displayNames = <String, String>{};
+    for (final sale in source) {
+      final rawName = sale.customerName.trim().isEmpty
           ? 'Unknown'
           : sale.customerName.trim();
-      grouped.putIfAbsent(name, () => []).add(sale);
+      final key = rawName.toLowerCase();
+      displayNames.putIfAbsent(key, () => rawName);
+      grouped.putIfAbsent(key, () => []).add(sale);
+    }
+
+    final allPostPayByCustomer = <String, List<Sale>>{};
+    for (final s in sales) {
+      if (s.paymentMethod == PaymentMethod.postPay || !s.isPaid) {
+        final rawName =
+            s.customerName.trim().isEmpty ? 'Unknown' : s.customerName.trim();
+        allPostPayByCustomer.putIfAbsent(rawName.toLowerCase(), () => []).add(s);
+      }
     }
 
     final now = DateTime.now();
@@ -629,11 +1378,14 @@ class ShopController extends ChangeNotifier {
     final result = <DebtorSummary>[];
 
     for (final entry in grouped.entries) {
-      final list = entry.value;
-      final debt = list.fold(0.0, (sum, s) => sum + s.remainingDebt);
+      final key = entry.key;
+      final name = displayNames[key] ?? key;
+      final unpaidList = entry.value.where((s) => !s.isPaid).toList();
+      final allDebtList = allPostPayByCustomer[key] ?? entry.value;
+      final debt = unpaidList.fold(0.0, (sum, s) => sum + s.remainingDebt);
       DateTime? earliest;
       var overdue = false;
-      for (final s in list) {
+      for (final s in unpaidList) {
         final due = s.dueDate;
         if (due != null) {
           if (earliest == null || due.isBefore(earliest)) {
@@ -644,10 +1396,36 @@ class ShopController extends ChangeNotifier {
           }
         }
       }
+
+      final repayments =
+          <({DateTime date, double amount, String receiptCode})>[];
+      for (final s in allDebtList) {
+        if (s.paymentHistory.isNotEmpty) {
+          for (final p in s.paymentHistory) {
+            repayments.add((
+              date: p.paidAt,
+              amount: p.amount,
+              receiptCode: s.receiptCode,
+            ));
+          }
+        } else if (s.paidAmount > 0.009) {
+          repayments.add((
+            date: s.paidAt ?? s.createdAt,
+            amount: s.paidAmount,
+            receiptCode: s.receiptCode,
+          ));
+        }
+      }
+      repayments.sort((a, b) => b.date.compareTo(a.date));
+
       result.add(
         DebtorSummary(
-          customerName: entry.key,
-          sales: list,
+          customerName: name,
+          phone: customerPhoneByName(name),
+          sales: unpaidList,
+          allDebtSales: allDebtList,
+          totalDebtPurchasesCount: allDebtList.length,
+          repayments: repayments,
           totalDebt: debt,
           earliestDueDate: earliest,
           hasOverdue: overdue,
@@ -655,9 +1433,18 @@ class ShopController extends ChangeNotifier {
       );
     }
 
-    result.sort((a, b) => b.totalDebt.compareTo(a.totalDebt));
+    result.sort((a, b) {
+      final debtCmp = b.totalDebt.compareTo(a.totalDebt);
+      if (debtCmp != 0) return debtCmp;
+      return b.totalDebtPurchasesCount.compareTo(a.totalDebtPurchasesCount);
+    });
     return result;
   }
+
+  List<DebtorSummary> get debtors => _buildDebtSummaries(unpaidOnly: true);
+
+  List<DebtorSummary> get allDebtCustomers =>
+      _buildDebtSummaries(unpaidOnly: false);
 
   Future<void> markAllCustomerDebtsPaid(String customerName) async {
     final target = customerName.trim();
@@ -732,6 +1519,14 @@ class ShopController extends ChangeNotifier {
     _customers.removeWhere((c) => c.id == customerId);
     notifyListeners();
     await _persist();
+  }
+
+  List<Sale> salesForCustomer(String customerName) {
+    final target = customerName.trim().toLowerCase();
+    if (target.isEmpty) return const [];
+    return sales
+        .where((s) => s.customerName.trim().toLowerCase() == target)
+        .toList(growable: false);
   }
 
   CustomerStats statsForCustomer(String customerName) {
@@ -1058,6 +1853,7 @@ class ShopController extends ChangeNotifier {
       updatedAt: DateTime.now(),
     );
     _products.insert(0, product);
+    _recordProductCreated(product, 'create');
     notifyListeners();
     await _persist();
     return product;
@@ -1066,13 +1862,13 @@ class ShopController extends ChangeNotifier {
   Future<void> updateProduct(Product updated) async {
     final index = _products.indexWhere((p) => p.id == updated.id);
     if (index == -1) return;
-    _products[index] = updated.copyWith(updatedAt: DateTime.now());
-    final currentCartQty = _cart[updated.id] ?? 0;
-    if (!updated.isActive || updated.stock <= 0) {
+    final before = _products[index];
+    final next = updated.copyWith(updatedAt: DateTime.now());
+    _products[index] = next;
+    _recordProductChange(before, next, 'edit');
+    if (!updated.isActive) {
       _cart.remove(updated.id);
       _cartCustomPrices.remove(updated.id);
-    } else if (currentCartQty > updated.stock) {
-      _cart[updated.id] = updated.stock;
     }
     notifyListeners();
     await _persist();
@@ -1092,10 +1888,12 @@ class ShopController extends ChangeNotifier {
       final current = _products[i];
       if (targetIds.contains(current.id) &&
           current.category != cleanCategory) {
-        _products[i] = current.copyWith(
+        final next = current.copyWith(
           category: cleanCategory,
           updatedAt: now,
         );
+        _products[i] = next;
+        _recordProductChange(current, next, 'edit');
         moved += 1;
       }
     }
@@ -1143,7 +1941,7 @@ class ShopController extends ChangeNotifier {
       final index = _products.indexWhere((p) => p.id == item.productId);
       if (index != -1) {
         final current = _products[index];
-        _products[index] = current.copyWith(
+        final next = current.copyWith(
           stock: current.stock + item.quantity,
           costPrice: item.unitCost > 0 ? item.unitCost : current.costPrice,
           sellPrice: (item.newSellPrice != null && item.newSellPrice! > 0)
@@ -1151,6 +1949,8 @@ class ShopController extends ChangeNotifier {
               : current.sellPrice,
           updatedAt: now,
         );
+        _products[index] = next;
+        _recordProductChange(current, next, 'stock_in');
       }
     }
 
@@ -1183,6 +1983,64 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
+  Future<void> repeatStockIn(StockInRecord record) async {
+    final quantities = <String, int>{};
+    final unitCosts = <String, double>{};
+    final sellPrices = <String, double>{};
+    for (final item in record.items) {
+      if (item.quantity <= 0) continue;
+      final product = findProductById(item.productId);
+      if (product == null || !product.isActive) continue;
+      quantities[product.id] = (quantities[product.id] ?? 0) + item.quantity;
+      unitCosts[product.id] = item.unitCost;
+      sellPrices[product.id] =
+          (item.newSellPrice != null && item.newSellPrice! > 0)
+              ? item.newSellPrice!
+              : product.sellPrice;
+    }
+    await saveStockInDraft(
+      StockInDraft(
+        supplierName: record.supplierName,
+        recordAsExpense: true,
+        quantities: quantities,
+        unitCosts: unitCosts,
+        sellPrices: sellPrices,
+      ),
+    );
+  }
+
+  Future<void> deleteStockIn(String stockInId) async {
+    final idx = _stockIns.indexWhere((s) => s.id == stockInId);
+    if (idx == -1) return;
+    final record = _stockIns.removeAt(idx);
+    final now = DateTime.now();
+
+    for (final item in record.items) {
+      if (item.quantity <= 0) continue;
+      final productIndex = _products.indexWhere((p) => p.id == item.productId);
+      if (productIndex != -1) {
+        final current = _products[productIndex];
+        final nextStock = current.stock - item.quantity;
+        final next = current.copyWith(
+          stock: nextStock < 0 ? 0 : nextStock,
+          updatedAt: now,
+        );
+        _products[productIndex] = next;
+        _recordProductChange(current, next, 'stock_in_delete');
+      }
+    }
+
+    _expenses.removeWhere(
+      (e) =>
+          e.category == ExpenseCategory.purchase &&
+          (e.amount - record.totalCost).abs() < 0.01 &&
+          e.createdAt.difference(record.createdAt).inSeconds.abs() <= 2,
+    );
+
+    notifyListeners();
+    await _persist();
+  }
+
   Future<int> applyStocktake(Map<String, int> actualCounts) async {
     var adjusted = 0;
     final now = DateTime.now();
@@ -1191,10 +2049,13 @@ class ShopController extends ChangeNotifier {
       if (index == -1) continue;
       final cleanCount = entry.value < 0 ? 0 : entry.value;
       if (_products[index].stock != cleanCount) {
-        _products[index] = _products[index].copyWith(
+        final before = _products[index];
+        final next = before.copyWith(
           stock: cleanCount,
           updatedAt: now,
         );
+        _products[index] = next;
+        _recordProductChange(before, next, 'stocktake');
         adjusted += 1;
       }
     }
@@ -1226,6 +2087,12 @@ class ShopController extends ChangeNotifier {
           clearTrashedAt: true,
           updatedAt: now,
         );
+        _recordProductStatusChange(
+          current,
+          strings.statusActiveLabel,
+          strings.statusArchivedLabel,
+          'archive',
+        );
         _cart.remove(current.id);
         moved += 1;
       }
@@ -1253,10 +2120,17 @@ class ShopController extends ChangeNotifier {
   Future<void> unarchiveProduct(String productId) async {
     final index = _products.indexWhere((p) => p.id == productId);
     if (index == -1) return;
-    _products[index] = _products[index].copyWith(
+    final current = _products[index];
+    _products[index] = current.copyWith(
       clearArchivedAt: true,
       clearTrashedAt: true,
       updatedAt: DateTime.now(),
+    );
+    _recordProductStatusChange(
+      current,
+      strings.statusArchivedLabel,
+      strings.statusActiveLabel,
+      'restore',
     );
     notifyListeners();
     await _persist();
@@ -1267,10 +2141,17 @@ class ShopController extends ChangeNotifier {
     var restored = 0;
     for (var i = 0; i < _products.length; i++) {
       if (_products[i].isArchived) {
-        _products[i] = _products[i].copyWith(
+        final current = _products[i];
+        _products[i] = current.copyWith(
           clearArchivedAt: true,
           clearTrashedAt: true,
           updatedAt: now,
+        );
+        _recordProductStatusChange(
+          current,
+          strings.statusArchivedLabel,
+          strings.statusActiveLabel,
+          'restore',
         );
         restored += 1;
       }
@@ -1294,9 +2175,18 @@ class ShopController extends ChangeNotifier {
     for (var i = 0; i < _products.length; i++) {
       final current = _products[i];
       if (targetIds.contains(current.id) && !current.isTrashed) {
+        final oldStatus = current.isArchived
+            ? strings.statusArchivedLabel
+            : strings.statusActiveLabel;
         _products[i] = current.copyWith(
           trashedAt: now,
           updatedAt: now,
+        );
+        _recordProductStatusChange(
+          current,
+          oldStatus,
+          strings.statusTrashedLabel,
+          'trash',
         );
         _cart.remove(current.id);
         moved += 1;
@@ -1325,10 +2215,17 @@ class ShopController extends ChangeNotifier {
   Future<void> restoreProductFromTrash(String productId) async {
     final index = _products.indexWhere((p) => p.id == productId);
     if (index == -1) return;
-    _products[index] = _products[index].copyWith(
+    final current = _products[index];
+    _products[index] = current.copyWith(
       clearArchivedAt: true,
       clearTrashedAt: true,
       updatedAt: DateTime.now(),
+    );
+    _recordProductStatusChange(
+      current,
+      strings.statusTrashedLabel,
+      strings.statusActiveLabel,
+      'restore',
     );
     notifyListeners();
     await _persist();
@@ -1339,10 +2236,17 @@ class ShopController extends ChangeNotifier {
     var restored = 0;
     for (var i = 0; i < _products.length; i++) {
       if (_products[i].isTrashed) {
-        _products[i] = _products[i].copyWith(
+        final current = _products[i];
+        _products[i] = current.copyWith(
           clearArchivedAt: true,
           clearTrashedAt: true,
           updatedAt: now,
+        );
+        _recordProductStatusChange(
+          current,
+          strings.statusTrashedLabel,
+          strings.statusActiveLabel,
+          'restore',
         );
         restored += 1;
       }
@@ -1370,6 +2274,12 @@ class ShopController extends ChangeNotifier {
           archivedAt: now,
           clearTrashedAt: true,
           updatedAt: now,
+        );
+        _recordProductStatusChange(
+          current,
+          strings.statusTrashedLabel,
+          strings.statusArchivedLabel,
+          'archive',
         );
         moved += 1;
       }
@@ -1399,6 +2309,12 @@ class ShopController extends ChangeNotifier {
           clearTrashedAt: true,
           updatedAt: now,
         );
+        _recordProductStatusChange(
+          current,
+          strings.statusArchivedLabel,
+          strings.statusActiveLabel,
+          'restore',
+        );
         restored += 1;
       }
     }
@@ -1421,6 +2337,12 @@ class ShopController extends ChangeNotifier {
           clearArchivedAt: true,
           clearTrashedAt: true,
           updatedAt: now,
+        );
+        _recordProductStatusChange(
+          current,
+          strings.statusTrashedLabel,
+          strings.statusActiveLabel,
+          'restore',
         );
         restored += 1;
       }
@@ -1489,12 +2411,14 @@ class ShopController extends ChangeNotifier {
 
   bool addToCart(String productId, {int quantity = 1}) {
     final product = findProductById(productId);
-    if (product == null || !product.isActive || product.stock <= 0) {
+    if (product == null || !product.isActive || quantity <= 0) {
       return false;
     }
     final existing = _cart[productId] ?? 0;
     final next = existing + quantity;
-    if (next > product.stock) return false;
+    if (!canSellNegativeStock && (product.stock <= 0 || next > product.stock)) {
+      return false;
+    }
     _cart[productId] = next;
     notifyListeners();
     return true;
@@ -1508,7 +2432,17 @@ class ShopController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _cart[productId] = quantity > product.stock ? product.stock : quantity;
+    if (!canSellNegativeStock) {
+      if (product.stock <= 0) {
+        _cart.remove(productId);
+        _cartCustomPrices.remove(productId);
+        notifyListeners();
+        return;
+      }
+      _cart[productId] = quantity > product.stock ? product.stock : quantity;
+    } else {
+      _cart[productId] = quantity;
+    }
     notifyListeners();
   }
 
@@ -1537,6 +2471,7 @@ class ShopController extends ChangeNotifier {
     PaymentMethod? secondaryPaymentMethod,
     double secondaryAmount = 0,
     String customerName = '',
+    String customerPhone = '',
     double discount = 0,
     double? paidAmount,
     DateTime? dueDate,
@@ -1544,9 +2479,11 @@ class ShopController extends ChangeNotifier {
     final lines = cartLines;
     if (lines.isEmpty) return null;
 
-    for (final line in lines) {
-      if (line.quantity > line.product.stock) {
-        return null;
+    if (!canSellNegativeStock) {
+      for (final line in lines) {
+        if (line.quantity > line.product.stock) {
+          return null;
+        }
       }
     }
 
@@ -1580,13 +2517,17 @@ class ShopController extends ChangeNotifier {
       resolvedPaid = total;
     }
 
+    final cleanCustomerName = customerName.trim();
+    final cleanCustomerPhone = customerPhone.trim();
+
     final sale = Sale(
       id: _nextId('sal'),
       items: saleItems,
       paymentMethod: paymentMethod,
       secondaryPaymentMethod: hasValidSplit ? secondaryPaymentMethod : null,
       secondaryAmount: hasValidSplit ? secondaryAmount : 0,
-      customerName: customerName.trim(),
+      customerName: cleanCustomerName,
+      customerPhone: cleanCustomerPhone,
       discount: cleanDiscount,
       paidAmount: resolvedPaid,
       dueDate: paymentMethod == PaymentMethod.postPay ? dueDate : null,
@@ -1597,14 +2538,44 @@ class ShopController extends ChangeNotifier {
       createdAt: now,
     );
 
+    if (cleanCustomerName.isNotEmpty) {
+      final existingIdx = _customers.indexWhere(
+        (c) => c.name.trim().toLowerCase() == cleanCustomerName.toLowerCase(),
+      );
+      if (existingIdx != -1) {
+        if (cleanCustomerPhone.isNotEmpty &&
+            _customers[existingIdx].phone.trim() != cleanCustomerPhone) {
+          _customers[existingIdx] = _customers[existingIdx].copyWith(
+            phone: cleanCustomerPhone,
+          );
+        }
+      } else {
+        _customers.add(
+          Customer(
+            id: _nextId('cus'),
+            name: cleanCustomerName,
+            phone: cleanCustomerPhone,
+            createdAt: now,
+          ),
+        );
+        _customers.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
+      }
+    }
+
     for (final line in lines) {
       final index = _products.indexWhere((p) => p.id == line.product.id);
       if (index != -1) {
         final current = _products[index];
+        final nextStock = current.stock - line.quantity;
         _products[index] = current.copyWith(
-          stock: current.stock - line.quantity,
+          stock: nextStock,
           updatedAt: now,
         );
+        if (nextStock < 0) {
+          _negativeStockReminders[current.id] = 5;
+        }
       }
     }
 
@@ -1947,9 +2918,8 @@ class ShopController extends ChangeNotifier {
       final productIndex = _products.indexWhere((p) => p.id == item.productId);
       if (productIndex != -1) {
         final current = _products[productIndex];
-        final nextStock = current.stock - item.quantity;
         _products[productIndex] = current.copyWith(
-          stock: nextStock < 0 ? 0 : nextStock,
+          stock: current.stock - item.quantity,
           updatedAt: now,
         );
       }
@@ -1974,9 +2944,8 @@ class ShopController extends ChangeNotifier {
       final productIndex = _products.indexWhere((p) => p.id == item.productId);
       if (productIndex != -1) {
         final current = _products[productIndex];
-        final nextStock = current.stock - item.quantity;
         _products[productIndex] = current.copyWith(
-          stock: nextStock < 0 ? 0 : nextStock,
+          stock: current.stock - item.quantity,
           updatedAt: now,
         );
       }
@@ -2131,4 +3100,39 @@ class ShopController extends ChangeNotifier {
     notifyListeners();
     await _persist();
   }
+}
+
+({
+  Map<String, String> changedCompressed,
+  List<String> removedSections,
+  Map<String, String> newHashes,
+}) _prepareCloudBackupDelta(
+  ({
+    ShopDataSnapshot snapshot,
+    Map<String, String> prevHashes,
+    bool forceFull,
+  }) args,
+) {
+  final sections = GoogleSheetsService.buildBackupSectionJsons(args.snapshot);
+  final newHashes = <String, String>{};
+  final changedCompressed = <String, String>{};
+
+  for (final entry in sections.entries) {
+    final hash = GoogleSheetsService.hashText(entry.value);
+    newHashes[entry.key] = hash;
+    if (args.forceFull || args.prevHashes[entry.key] != hash) {
+      changedCompressed[entry.key] =
+          GoogleSheetsService.compressSection(entry.value);
+    }
+  }
+
+  final removedSections = args.prevHashes.keys
+      .where((k) => !sections.containsKey(k))
+      .toList(growable: false);
+
+  return (
+    changedCompressed: changedCompressed,
+    removedSections: removedSections,
+    newHashes: newHashes,
+  );
 }

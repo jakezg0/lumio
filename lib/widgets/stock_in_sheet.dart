@@ -36,8 +36,8 @@ class _StockInSheetState extends State<StockInSheet> {
   String? _scanFeedback;
   bool _scanError = false;
   String? _notFoundSku;
-  String _lastCalcCurrency = 'USD';
-  String _lastCalcRate = '';
+  final String _lastCalcCurrency = 'USD';
+  final String _lastCalcRate = '';
   bool _addedOnly = false;
 
   @override
@@ -831,15 +831,18 @@ class _StockInSheetState extends State<StockInSheet> {
                               ),
                               const SizedBox(width: 6),
                               if (costDiff.abs() > 0.009)
-                                Text(
-                                  costDiff > 0
-                                      ? '↑ +${formatMoney(costDiff, currency)}'
-                                      : '↓ ${formatMoney(costDiff, currency)}',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    color: costDiff > 0
-                                        ? Theme.of(context).colorScheme.error
-                                        : Colors.green.shade700,
+                                Flexible(
+                                  child: Text(
+                                    costDiff > 0
+                                        ? '↑ +${formatMoney(costDiff, currency)}'
+                                        : '↓ ${formatMoney(costDiff, currency)}',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      color: costDiff > 0
+                                          ? Theme.of(context).colorScheme.error
+                                          : Colors.green.shade700,
+                                    ),
                                   ),
                                 ),
                             ],
@@ -999,8 +1002,7 @@ class _CurrencyCostCalculatorDialog extends StatefulWidget {
     required this.targetCurrency,
     required this.initialCurrency,
     required this.initialRate,
-    this.productName,
-  });
+  }) : productName = null;
 
   final dynamic strings;
   final dynamic targetCurrency;

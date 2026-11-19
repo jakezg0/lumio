@@ -58,6 +58,236 @@ class ExportService {
     return buffer.toString();
   }
 
+  static String _tsvClean(String value) {
+    return value
+        .replaceAll('\t', ' ')
+        .replaceAll(RegExp(r'[\r\n]+'), ' ')
+        .trim();
+  }
+
+  static String buildProductsReadableTsv(List<Product> products) {
+    final buffer = StringBuffer();
+    buffer.writeln(
+      [
+        'Название',
+        'Категория',
+        'Штрихкод (SKU)',
+        'Закуп',
+        'Цена',
+        'Остаток',
+        'Порог',
+        'Маржа %',
+        'Сумма закупа',
+        'Упаковка',
+        'Коробка',
+        'Штрихкод упаковки',
+        'Штрихкод коробки',
+        'ID',
+      ].join('\t'),
+    );
+    for (final p in products) {
+      buffer.writeln(
+        [
+          _tsvClean(p.name),
+          _tsvClean(p.category),
+          _tsvClean(p.sku),
+          p.costPrice == p.costPrice.roundToDouble()
+              ? p.costPrice.toStringAsFixed(0)
+              : p.costPrice.toStringAsFixed(2),
+          p.sellPrice == p.sellPrice.roundToDouble()
+              ? p.sellPrice.toStringAsFixed(0)
+              : p.sellPrice.toStringAsFixed(2),
+          '${p.stock}',
+          '${p.lowStockThreshold}',
+          p.marginPercent.toStringAsFixed(1),
+          p.inventoryValue == p.inventoryValue.roundToDouble()
+              ? p.inventoryValue.toStringAsFixed(0)
+              : p.inventoryValue.toStringAsFixed(2),
+          _tsvClean(p.packQty),
+          _tsvClean(p.boxQty),
+          _tsvClean(p.packBarcode),
+          _tsvClean(p.boxBarcode),
+          _tsvClean(p.id),
+        ].join('\t'),
+      );
+    }
+    return buffer.toString();
+  }
+
+  static String buildProductsReadableCsvWithBom(List<Product> products) {
+    final buffer = StringBuffer('\uFEFF');
+    buffer.writeln(
+      'Название;Категория;Штрихкод (SKU);Закуп;Цена;Остаток;Порог;Маржа %;Сумма закупа;Упаковка;Коробка;Штрихкод упаковки;Штрихкод коробки;ID',
+    );
+    for (final p in products) {
+      String numStr(double v) =>
+          v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+      buffer.writeln(
+        [
+          _csvEscape(p.name),
+          _csvEscape(p.category),
+          _csvEscape(p.sku),
+          numStr(p.costPrice),
+          numStr(p.sellPrice),
+          '${p.stock}',
+          '${p.lowStockThreshold}',
+          p.marginPercent.toStringAsFixed(1),
+          numStr(p.inventoryValue),
+          _csvEscape(p.packQty),
+          _csvEscape(p.boxQty),
+          _csvEscape(p.packBarcode),
+          _csvEscape(p.boxBarcode),
+          _csvEscape(p.id),
+        ].join(';'),
+      );
+    }
+    return buffer.toString();
+  }
+
+  static String buildImportTemplateTsv() {
+    final buffer = StringBuffer();
+    buffer.writeln(
+      'Название\tКатегория\tШтрихкод (SKU)\tЗакуп\tЦена\tОстаток\tПорог',
+    );
+    buffer.writeln('Угол наружный 70мм Белый\tПлинтусы\t4601234567890\t200\t320\t50\t5');
+    buffer.writeln('Соединитель 85мм Белый\tКомплектующие\t4601234567891\t220\t350\t30\t5');
+    return buffer.toString();
+  }
+
+  static String buildProductChangesCsvWithBom(
+    List<ProductChangeEntry> entries,
+    AppStrings strings,
+  ) {
+    final buffer = StringBuffer('\uFEFF');
+    buffer.writeln('Дата;Товар;Источник;Поле;Было;Стало');
+    for (final e in entries) {
+      final dateStr = formatDateTime(e.createdAt);
+      final sourceStr = strings.changeSourceLabel(e.source);
+      for (final f in e.fields) {
+        buffer.writeln(
+          [
+            _csvEscape(dateStr),
+            _csvEscape(e.productName),
+            _csvEscape(sourceStr),
+            _csvEscape(f.label),
+            _csvEscape(f.oldValue),
+            _csvEscape(f.newValue),
+          ].join(';'),
+        );
+      }
+    }
+    return buffer.toString();
+  }
+
+  static List<String> _splitDelimitedLine(String line, String delimiter) {
+    if (delimiter == '\t') {
+      return line.split('\t').map((e) => e.trim()).toList();
+    }
+    final result = <String>[];
+    final current = StringBuffer();
+    var inQuotes = false;
+    for (var i = 0; i < line.length; i++) {
+      final ch = line[i];
+      if (ch == '"') {
+        if (inQuotes && i + 1 < line.length && line[i + 1] == '"') {
+          current.write('"');
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch == delimiter && !inQuotes) {
+        result.add(current.toString().trim());
+        current.clear();
+      } else {
+        current.write(ch);
+      }
+    }
+    result.add(current.toString().trim());
+    return result;
+  }
+
+  static List<Product> parseTabularProducts(String rawText) {
+    final lines = rawText
+        .replaceAll('\uFEFF', '')
+        .split(RegExp(r'\r?\n'))
+        .where((l) => l.trim().isNotEmpty)
+        .toList();
+    if (lines.isEmpty) return const [];
+
+    final headerLine = lines.first;
+    final delimiter = headerLine.contains('\t')
+        ? '\t'
+        : (headerLine.contains(';') ? ';' : ',');
+    final rawHeaders = _splitDelimitedLine(headerLine, delimiter);
+
+    String mapHeader(String h) {
+      final k = h.toLowerCase().trim();
+      if (k == 'id') return 'id';
+      if (k == 'name' || k.contains('назван') || k.contains('атау') || k == 'товар') return 'name';
+      if (k == 'category' || k.contains('катег') || k.contains('санат') || k == 'группа') return 'category';
+      if (k == 'sku' || k.contains('штрихкод (sku)') || k == 'штрихкод' || k == 'артикул') return 'sku';
+      if (k == 'costprice' || k == 'cost' || k.contains('закуп') || k.contains('себест') || k.contains('сатып')) return 'costPrice';
+      if (k == 'sellprice' || k == 'price' || k == 'цена' || k.contains('цена прод') || k.contains('сату')) return 'sellPrice';
+      if (k == 'stock' || k.contains('остаток') || k.contains('колич') || k.contains('қалдық')) return 'stock';
+      if (k == 'lowstockthreshold' || k.contains('порог') || k.contains('шек')) return 'lowStockThreshold';
+      if (k == 'packqty' || k == 'упаковка') return 'packQty';
+      if (k == 'boxqty' || k == 'коробка') return 'boxQty';
+      if (k == 'packbarcode' || k.contains('штрихкод упак')) return 'packBarcode';
+      if (k == 'boxbarcode' || k.contains('штрихкод кор')) return 'boxBarcode';
+      return '';
+    }
+
+    final mappedHeaders = rawHeaders.map(mapHeader).toList();
+    final hasHeaderRow = mappedHeaders.contains('name');
+    final startIndex = hasHeaderRow ? 1 : 0;
+    final cols = hasHeaderRow
+        ? mappedHeaders
+        : ['name', 'category', 'sku', 'costPrice', 'sellPrice', 'stock', 'lowStockThreshold'];
+
+    double parseNum(String? s) {
+      final clean = (s ?? '').trim().replaceAll(' ', '').replaceAll(',', '.');
+      return double.tryParse(clean) ?? 0.0;
+    }
+
+    int parseIntVal(String? s, {int fallback = 0}) {
+      final clean = (s ?? '').trim().replaceAll(' ', '');
+      return int.tryParse(clean) ?? fallback;
+    }
+
+    final now = DateTime.now();
+    final products = <Product>[];
+    for (var i = startIndex; i < lines.length; i++) {
+      final cells = _splitDelimitedLine(lines[i], delimiter);
+      final map = <String, String>{};
+      for (var c = 0; c < cols.length && c < cells.length; c++) {
+        if (cols[c].isNotEmpty) {
+          map[cols[c]] = cells[c];
+        }
+      }
+      final name = (map['name'] ?? '').trim();
+      if (name.isEmpty) continue;
+      final cat = (map['category'] ?? '').trim();
+      products.add(
+        Product(
+          id: (map['id'] ?? '').trim(),
+          name: name,
+          category: cat.isEmpty ? 'General' : cat,
+          sku: (map['sku'] ?? '').trim(),
+          packQty: (map['packQty'] ?? '').trim(),
+          boxQty: (map['boxQty'] ?? '').trim(),
+          packBarcode: (map['packBarcode'] ?? '').trim(),
+          boxBarcode: (map['boxBarcode'] ?? '').trim(),
+          costPrice: parseNum(map['costPrice']).clamp(0.0, double.infinity),
+          sellPrice: parseNum(map['sellPrice']).clamp(0.0, double.infinity),
+          stock: parseIntVal(map['stock']).clamp(0, 9999999),
+          lowStockThreshold: parseIntVal(map['lowStockThreshold'], fallback: 5).clamp(0, 999999),
+          updatedAt: now,
+        ),
+      );
+    }
+    return products;
+  }
+
   static String buildSalesCsv(List<Sale> sales) {
     final buffer = StringBuffer();
     buffer.writeln(
@@ -97,6 +327,7 @@ class ExportService {
       'shopPhone': snapshot.shopPhone,
       'receiptFooter': snapshot.receiptFooter,
       'ownerPin': snapshot.ownerPin,
+      'useBiometricUnlock': snapshot.useBiometricUnlock,
       'cashierMode': snapshot.cashierMode,
       'products': snapshot.products.map((p) => p.toJson()).toList(),
       'sales': snapshot.sales.map((s) => s.toJson()).toList(),
@@ -137,7 +368,8 @@ class ExportService {
       shopPhone: (decoded['shopPhone'] as String?) ?? '',
       receiptFooter: (decoded['receiptFooter'] as String?) ?? '',
       ownerPin: (decoded['ownerPin'] as String?) ?? '',
-      cashierMode: (decoded['cashierMode'] as bool?) ?? false,
+      useBiometricUnlock: (decoded['useBiometricUnlock'] as bool?) ?? false,
+      cashierMode: (decoded['cashierMode'] as bool?) ?? true,
     );
   }
 

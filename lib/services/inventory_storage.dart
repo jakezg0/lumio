@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show compute;
+
 import '../models/customer.dart';
 import '../models/expense.dart';
 import '../models/product.dart';
@@ -21,12 +23,21 @@ class ShopDataSnapshot {
     this.shopPhone = '',
     this.receiptFooter = '',
     this.ownerPin = '',
-    this.cashierMode = false,
+    this.useBiometricUnlock = false,
+    this.cashierMode = true,
     this.catalogSeeded = false,
+    this.googleSheetsUrl = '',
+    this.googleSheetsSecret = '',
     this.customCategories = const [],
     this.stockInDraft,
     this.stocktakeDraft,
     this.heldSales = const [],
+    this.productChanges = const [],
+    this.negativeStockReminders = const {},
+    this.allowNegativeStock = true,
+    this.autoBackupEnabled = true,
+    this.lastAutoBackupAt = '',
+    this.cloudBackupHashes = const {},
   });
 
   final List<Product> products;
@@ -41,12 +52,21 @@ class ShopDataSnapshot {
   final String shopPhone;
   final String receiptFooter;
   final String ownerPin;
+  final bool useBiometricUnlock;
   final bool cashierMode;
   final bool catalogSeeded;
+  final String googleSheetsUrl;
+  final String googleSheetsSecret;
   final List<String> customCategories;
   final StockInDraft? stockInDraft;
   final StocktakeDraft? stocktakeDraft;
   final List<HeldSale> heldSales;
+  final List<ProductChangeEntry> productChanges;
+  final Map<String, int> negativeStockReminders;
+  final bool allowNegativeStock;
+  final bool autoBackupEnabled;
+  final String lastAutoBackupAt;
+  final Map<String, String> cloudBackupHashes;
 }
 
 abstract class InventoryStorage {
@@ -76,6 +96,7 @@ class JsonFileInventoryStorage implements InventoryStorage {
   JsonFileInventoryStorage({String? filePath}) : _customFilePath = filePath;
 
   final String? _customFilePath;
+  File? _cachedFile;
 
   String _androidPackageName() {
     try {
@@ -99,8 +120,9 @@ class JsonFileInventoryStorage implements InventoryStorage {
   }
 
   File _resolveFile() {
+    if (_cachedFile != null) return _cachedFile!;
     if (_customFilePath != null && _customFilePath.isNotEmpty) {
-      return File(_customFilePath);
+      return _cachedFile = File(_customFilePath);
     }
     if (Platform.isAndroid) {
       final pkg = _androidPackageName();
@@ -128,7 +150,7 @@ class JsonFileInventoryStorage implements InventoryStorage {
           }
         }
       }
-      return permanentFile;
+      return _cachedFile = permanentFile;
     }
     final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
     final baseDir = home != null && home.isNotEmpty
@@ -137,7 +159,7 @@ class JsonFileInventoryStorage implements InventoryStorage {
     if (!baseDir.existsSync()) {
       baseDir.createSync(recursive: true);
     }
-    return File('${baseDir.path}/shop_data.json');
+    return _cachedFile = File('${baseDir.path}/shop_data.json');
   }
 
   @override
@@ -151,61 +173,7 @@ class JsonFileInventoryStorage implements InventoryStorage {
       if (raw.trim().isEmpty) {
         return const ShopDataSnapshot(products: [], sales: [], expenses: []);
       }
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      final rawProducts = decoded['products'] as List<dynamic>? ?? const [];
-      final rawSales = decoded['sales'] as List<dynamic>? ?? const [];
-      final rawExpenses = decoded['expenses'] as List<dynamic>? ?? const [];
-      final rawCustomers = decoded['customers'] as List<dynamic>? ?? const [];
-      final rawStockIns = decoded['stockIns'] as List<dynamic>? ?? const [];
-      final rawCustomCats =
-          decoded['customCategories'] as List<dynamic>? ?? const [];
-      final rawHeldSales =
-          decoded['heldSales'] as List<dynamic>? ?? const [];
-      final hasAnyData = rawProducts.isNotEmpty ||
-          rawSales.isNotEmpty ||
-          rawExpenses.isNotEmpty ||
-          rawCustomers.isNotEmpty ||
-          rawStockIns.isNotEmpty;
-      return ShopDataSnapshot(
-        products: rawProducts
-            .map((item) => Product.fromJson(item as Map<String, dynamic>))
-            .toList(),
-        sales: rawSales
-            .map((item) => Sale.fromJson(item as Map<String, dynamic>))
-            .toList(),
-        expenses: rawExpenses
-            .map((item) => Expense.fromJson(item as Map<String, dynamic>))
-            .toList(),
-        customers: rawCustomers
-            .map((item) => Customer.fromJson(item as Map<String, dynamic>))
-            .toList(),
-        stockIns: rawStockIns
-            .map((item) => StockInRecord.fromJson(item as Map<String, dynamic>))
-            .toList(),
-        languageCode: (decoded['languageCode'] as String?) ?? 'auto',
-        currencyCode: (decoded['currencyCode'] as String?) ?? 'kzt',
-        shopName: (decoded['shopName'] as String?) ?? 'Lumio',
-        shopAddress: (decoded['shopAddress'] as String?) ?? '',
-        shopPhone: (decoded['shopPhone'] as String?) ?? '',
-        receiptFooter: (decoded['receiptFooter'] as String?) ?? '',
-        ownerPin: (decoded['ownerPin'] as String?) ?? '',
-        cashierMode: (decoded['cashierMode'] as bool?) ?? false,
-        catalogSeeded: (decoded['catalogSeeded'] as bool?) ?? hasAnyData,
-        customCategories: rawCustomCats.map((e) => '$e').toList(),
-        stockInDraft: decoded['stockInDraft'] is Map<String, dynamic>
-            ? StockInDraft.fromJson(
-                decoded['stockInDraft'] as Map<String, dynamic>,
-              )
-            : null,
-        stocktakeDraft: decoded['stocktakeDraft'] is Map<String, dynamic>
-            ? StocktakeDraft.fromJson(
-                decoded['stocktakeDraft'] as Map<String, dynamic>,
-              )
-            : null,
-        heldSales: rawHeldSales
-            .map((item) => HeldSale.fromJson(item as Map<String, dynamic>))
-            .toList(),
-      );
+      return await compute(_decodeSnapshotFromRawJson, raw);
     } catch (_) {
       return const ShopDataSnapshot(products: [], sales: [], expenses: []);
     }
@@ -219,29 +187,7 @@ class JsonFileInventoryStorage implements InventoryStorage {
       if (!await parent.exists()) {
         await parent.create(recursive: true);
       }
-      final payload = jsonEncode({
-        'products': snapshot.products.map((p) => p.toJson()).toList(),
-        'sales': snapshot.sales.map((s) => s.toJson()).toList(),
-        'expenses': snapshot.expenses.map((e) => e.toJson()).toList(),
-        'customers': snapshot.customers.map((c) => c.toJson()).toList(),
-        'stockIns': snapshot.stockIns.map((s) => s.toJson()).toList(),
-        'languageCode': snapshot.languageCode,
-        'currencyCode': snapshot.currencyCode,
-        'shopName': snapshot.shopName,
-        'shopAddress': snapshot.shopAddress,
-        'shopPhone': snapshot.shopPhone,
-        'receiptFooter': snapshot.receiptFooter,
-        'ownerPin': snapshot.ownerPin,
-        'cashierMode': snapshot.cashierMode,
-        'catalogSeeded': snapshot.catalogSeeded,
-        'customCategories': snapshot.customCategories,
-        if (snapshot.stockInDraft != null)
-          'stockInDraft': snapshot.stockInDraft!.toJson(),
-        if (snapshot.stocktakeDraft != null)
-          'stocktakeDraft': snapshot.stocktakeDraft!.toJson(),
-        if (snapshot.heldSales.isNotEmpty)
-          'heldSales': snapshot.heldSales.map((h) => h.toJson()).toList(),
-      });
+      final payload = await compute(_encodeSnapshotToJson, snapshot);
       try {
         final tmpFile = File('${file.path}.tmp');
         await tmpFile.writeAsString(payload, flush: true);
@@ -253,4 +199,121 @@ class JsonFileInventoryStorage implements InventoryStorage {
       // Ignore write failures in restricted environments.
     }
   }
+}
+
+ShopDataSnapshot _decodeSnapshotFromRawJson(String raw) {
+  final decoded = jsonDecode(raw) as Map<String, dynamic>;
+  final rawProducts = decoded['products'] as List<dynamic>? ?? const [];
+  final rawSales = decoded['sales'] as List<dynamic>? ?? const [];
+  final rawExpenses = decoded['expenses'] as List<dynamic>? ?? const [];
+  final rawCustomers = decoded['customers'] as List<dynamic>? ?? const [];
+  final rawStockIns = decoded['stockIns'] as List<dynamic>? ?? const [];
+  final rawCustomCats =
+      decoded['customCategories'] as List<dynamic>? ?? const [];
+  final rawHeldSales = decoded['heldSales'] as List<dynamic>? ?? const [];
+  final hasAnyData = rawProducts.isNotEmpty ||
+      rawSales.isNotEmpty ||
+      rawExpenses.isNotEmpty ||
+      rawCustomers.isNotEmpty ||
+      rawStockIns.isNotEmpty;
+  return ShopDataSnapshot(
+    products: rawProducts
+        .map((item) => Product.fromJson(item as Map<String, dynamic>))
+        .toList(),
+    sales: rawSales
+        .map((item) => Sale.fromJson(item as Map<String, dynamic>))
+        .toList(),
+    expenses: rawExpenses
+        .map((item) => Expense.fromJson(item as Map<String, dynamic>))
+        .toList(),
+    customers: rawCustomers
+        .map((item) => Customer.fromJson(item as Map<String, dynamic>))
+        .toList(),
+    stockIns: rawStockIns
+        .map((item) => StockInRecord.fromJson(item as Map<String, dynamic>))
+        .toList(),
+    languageCode: (decoded['languageCode'] as String?) ?? 'auto',
+    currencyCode: (decoded['currencyCode'] as String?) ?? 'kzt',
+    shopName: (decoded['shopName'] as String?) ?? 'Lumio',
+    shopAddress: (decoded['shopAddress'] as String?) ?? '',
+    shopPhone: (decoded['shopPhone'] as String?) ?? '',
+    receiptFooter: (decoded['receiptFooter'] as String?) ?? '',
+    ownerPin: (decoded['ownerPin'] as String?) ?? '',
+    useBiometricUnlock: (decoded['useBiometricUnlock'] as bool?) ?? false,
+    cashierMode: (decoded['cashierMode'] as bool?) ?? true,
+    catalogSeeded: (decoded['catalogSeeded'] as bool?) ?? hasAnyData,
+    googleSheetsUrl: (decoded['googleSheetsUrl'] as String?) ?? '',
+    googleSheetsSecret: (decoded['googleSheetsSecret'] as String?) ?? '',
+    customCategories: rawCustomCats.map((e) => '$e').toList(),
+    stockInDraft: decoded['stockInDraft'] is Map<String, dynamic>
+        ? StockInDraft.fromJson(
+            decoded['stockInDraft'] as Map<String, dynamic>,
+          )
+        : null,
+    stocktakeDraft: decoded['stocktakeDraft'] is Map<String, dynamic>
+        ? StocktakeDraft.fromJson(
+            decoded['stocktakeDraft'] as Map<String, dynamic>,
+          )
+        : null,
+    heldSales: rawHeldSales
+        .map((item) => HeldSale.fromJson(item as Map<String, dynamic>))
+        .toList(),
+    productChanges: (decoded['productChanges'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(ProductChangeEntry.fromJson)
+        .toList(),
+    negativeStockReminders:
+        (decoded['negativeStockReminders'] as Map<String, dynamic>? ??
+                const {})
+            .map((k, v) => MapEntry(k, (v as num?)?.toInt() ?? 0))
+          ..removeWhere((_, v) => v <= 0),
+    allowNegativeStock: (decoded['allowNegativeStock'] as bool?) ?? true,
+    autoBackupEnabled: (decoded['autoBackupEnabled'] as bool?) ?? true,
+    lastAutoBackupAt: (decoded['lastAutoBackupAt'] as String?) ?? '',
+    cloudBackupHashes:
+        (decoded['cloudBackupHashes'] as Map<String, dynamic>? ?? const {})
+            .map((k, v) => MapEntry(k, '$v')),
+  );
+}
+
+String _encodeSnapshotToJson(ShopDataSnapshot snapshot) {
+  return jsonEncode({
+    'products': snapshot.products.map((p) => p.toJson()).toList(),
+    'sales': snapshot.sales.map((s) => s.toJson()).toList(),
+    'expenses': snapshot.expenses.map((e) => e.toJson()).toList(),
+    'customers': snapshot.customers.map((c) => c.toJson()).toList(),
+    'stockIns': snapshot.stockIns.map((s) => s.toJson()).toList(),
+    'languageCode': snapshot.languageCode,
+    'currencyCode': snapshot.currencyCode,
+    'shopName': snapshot.shopName,
+    'shopAddress': snapshot.shopAddress,
+    'shopPhone': snapshot.shopPhone,
+    'receiptFooter': snapshot.receiptFooter,
+    'ownerPin': snapshot.ownerPin,
+    'useBiometricUnlock': snapshot.useBiometricUnlock,
+    'cashierMode': snapshot.cashierMode,
+    'catalogSeeded': snapshot.catalogSeeded,
+    if (snapshot.googleSheetsUrl.isNotEmpty)
+      'googleSheetsUrl': snapshot.googleSheetsUrl,
+    if (snapshot.googleSheetsSecret.isNotEmpty)
+      'googleSheetsSecret': snapshot.googleSheetsSecret,
+    'customCategories': snapshot.customCategories,
+    if (snapshot.stockInDraft != null)
+      'stockInDraft': snapshot.stockInDraft!.toJson(),
+    if (snapshot.stocktakeDraft != null)
+      'stocktakeDraft': snapshot.stocktakeDraft!.toJson(),
+    if (snapshot.heldSales.isNotEmpty)
+      'heldSales': snapshot.heldSales.map((h) => h.toJson()).toList(),
+    if (snapshot.productChanges.isNotEmpty)
+      'productChanges':
+          snapshot.productChanges.map((c) => c.toJson()).toList(),
+    if (snapshot.negativeStockReminders.isNotEmpty)
+      'negativeStockReminders': snapshot.negativeStockReminders,
+    'allowNegativeStock': snapshot.allowNegativeStock,
+    'autoBackupEnabled': snapshot.autoBackupEnabled,
+    if (snapshot.lastAutoBackupAt.isNotEmpty)
+      'lastAutoBackupAt': snapshot.lastAutoBackupAt,
+    if (snapshot.cloudBackupHashes.isNotEmpty)
+      'cloudBackupHashes': snapshot.cloudBackupHashes,
+  });
 }

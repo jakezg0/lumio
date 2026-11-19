@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../l10n/app_strings.dart';
 import '../models/sale.dart';
 import '../models/stock_in.dart';
 import '../screens/barcode_scanner_screen.dart';
@@ -8,6 +9,7 @@ import '../services/export_service.dart';
 import '../state/shop_controller.dart';
 import 'formatters.dart';
 import 'receipt_sheet.dart';
+import 'stock_in_sheet.dart';
 
 enum InvoiceHistoryFilter {
   all,
@@ -20,10 +22,12 @@ class InvoicesHistorySheet extends StatefulWidget {
     super.key,
     required this.controller,
     this.initialFilter = InvoiceHistoryFilter.all,
+    this.initialDateFilter = SalesDateFilter.all,
   });
 
   final ShopController controller;
   final InvoiceHistoryFilter initialFilter;
+  final SalesDateFilter initialDateFilter;
 
   @override
   State<InvoicesHistorySheet> createState() => _InvoicesHistorySheetState();
@@ -32,18 +36,76 @@ class InvoicesHistorySheet extends StatefulWidget {
 class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
   final _searchCtrl = TextEditingController();
   late InvoiceHistoryFilter _typeFilter;
+  late SalesDateFilter _dateFilter;
   String _query = '';
 
   @override
   void initState() {
     super.initState();
     _typeFilter = widget.initialFilter;
+    _dateFilter = widget.initialDateFilter;
   }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  String _dateFilterLabel(AppStrings strings, SalesDateFilter filter) {
+    switch (filter) {
+      case SalesDateFilter.today:
+        return strings.filterToday;
+      case SalesDateFilter.last7Days:
+        return strings.filter7Days;
+      case SalesDateFilter.all:
+        return strings.filterAll;
+    }
+  }
+
+  Future<void> _repeatStockIn(StockInRecord inv) async {
+    await widget.controller.repeatStockIn(inv);
+    if (!mounted) return;
+    final navigator = Navigator.of(context);
+    navigator.pop();
+    await showModalBottomSheet<int>(
+      context: navigator.context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => StockInSheet(controller: widget.controller),
+    );
+  }
+
+  Future<void> _confirmDeleteStockIn(StockInRecord inv) async {
+    final strings = widget.controller.strings;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(strings.deleteStockInTitle),
+        content: Text(strings.deleteStockInBody(inv.totalUnits)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogCtx).colorScheme.error,
+              foregroundColor: Theme.of(dialogCtx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: Text(strings.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await widget.controller.deleteStockIn(inv.id);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.stockInDeletedMsg)),
+      );
+    }
   }
 
   bool _matchesQuery(String rawQuery, List<String> fields) {
@@ -80,9 +142,11 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
         }
 
         final entries = <_InvoiceEntry>[];
+        var totalStockInCost = 0.0;
+        var totalStockInUnits = 0;
 
         if (_typeFilter != InvoiceHistoryFilter.stockIns) {
-          for (final sale in widget.controller.sales) {
+          for (final sale in widget.controller.filteredSales(_dateFilter)) {
             final customerKey = sale.customerName.trim().toLowerCase();
             final phone = phoneByCustomer[customerKey] ?? '';
             final paymentLabel = sale.isSplitPayment
@@ -114,7 +178,7 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
         }
 
         if (_typeFilter != InvoiceHistoryFilter.sales) {
-          for (final inv in widget.controller.stockIns) {
+          for (final inv in widget.controller.filteredStockIns(_dateFilter)) {
             final fields = <String>[
               inv.id,
               inv.supplierName,
@@ -125,6 +189,8 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
               for (final item in inv.items) item.productName,
             ];
             if (_matchesQuery(_query, fields)) {
+              totalStockInCost += inv.totalCost;
+              totalStockInUnits += inv.totalUnits;
               entries.add(
                 _InvoiceEntry(
                   createdAt: inv.createdAt,
@@ -137,128 +203,185 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
 
         entries.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-        return Padding(
-          padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    strings.invoiceHistoryTitle,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  Text(
-                    '${entries.length}',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              SegmentedButton<InvoiceHistoryFilter>(
-                showSelectedIcon: false,
-                segments: [
-                  ButtonSegment(
-                    value: InvoiceHistoryFilter.all,
-                    label: Text(
-                      strings.allCategory,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  ButtonSegment(
-                    value: InvoiceHistoryFilter.sales,
-                    label: Text(
-                      strings.saleInvoicesTab,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  ButtonSegment(
-                    value: InvoiceHistoryFilter.stockIns,
-                    label: Text(
-                      strings.stockInInvoicesTab,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-                selected: {_typeFilter},
-                onSelectionChanged: (sel) {
-                  setState(() => _typeFilter = sel.first);
-                },
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _searchCtrl,
-                onChanged: (v) => setState(() => _query = v),
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.search),
-                  hintText: strings.searchInvoicesHint,
-                  isDense: true,
-                  border: const OutlineInputBorder(),
-                  suffixIcon: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_query.isNotEmpty)
-                        IconButton(
-                          onPressed: () {
-                            _searchCtrl.clear();
-                            setState(() => _query = '');
-                          },
-                          icon: const Icon(Icons.clear),
-                        ),
-                      IconButton(
-                        tooltip: strings.scanReceiptBarcodeTooltip,
-                        onPressed: () async {
-                          final scanned = await Navigator.of(context).push<String>(
-                            MaterialPageRoute<String>(
-                              builder: (_) => BarcodeScannerScreen(strings: strings),
-                            ),
-                          );
-                          if (scanned != null && scanned.trim().isNotEmpty && mounted) {
-                            setState(() {
-                              _searchCtrl.text = scanned.trim();
-                              _query = scanned.trim();
-                            });
-                          }
-                        },
-                        icon: const Icon(Icons.qr_code_scanner),
+        return SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.88,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        strings.invoiceHistoryTitle,
+                        style: Theme.of(context).textTheme.titleLarge,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${entries.length}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                SegmentedButton<SalesDateFilter>(
+                  showSelectedIcon: false,
+                  segments: [
+                    for (final option in SalesDateFilter.values)
+                      ButtonSegment(
+                        value: option,
+                        label: Text(
+                          _dateFilterLabel(strings, option),
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  selected: {_dateFilter},
+                  onSelectionChanged: (sel) {
+                    setState(() => _dateFilter = sel.first);
+                  },
+                ),
+                const SizedBox(height: 8),
+                SegmentedButton<InvoiceHistoryFilter>(
+                  showSelectedIcon: false,
+                  segments: [
+                    ButtonSegment(
+                      value: InvoiceHistoryFilter.all,
+                      label: Text(
+                        strings.allCategory,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    ButtonSegment(
+                      value: InvoiceHistoryFilter.sales,
+                      label: Text(
+                        strings.saleInvoicesTab,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    ButtonSegment(
+                      value: InvoiceHistoryFilter.stockIns,
+                      label: Text(
+                        strings.stockInInvoicesTab,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                  selected: {_typeFilter},
+                  onSelectionChanged: (sel) {
+                    setState(() => _typeFilter = sel.first);
+                  },
+                ),
+                if (_typeFilter != InvoiceHistoryFilter.sales &&
+                    totalStockInUnits > 0) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest
+                          .withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${strings.totalPurchasesForPeriodLabel} (${strings.unitsShort(totalStockInUnits)})',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          formatMoney(totalStockInCost, currency),
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _searchCtrl,
+                  onChanged: (v) => setState(() => _query = v),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: strings.searchInvoicesHint,
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_query.isNotEmpty)
+                          IconButton(
+                            onPressed: () {
+                              _searchCtrl.clear();
+                              setState(() => _query = '');
+                            },
+                            icon: const Icon(Icons.clear),
+                          ),
+                        IconButton(
+                          tooltip: strings.scanReceiptBarcodeTooltip,
+                          onPressed: () async {
+                            final scanned = await Navigator.of(context).push<String>(
+                              MaterialPageRoute<String>(
+                                builder: (_) => BarcodeScannerScreen(strings: strings),
+                              ),
+                            );
+                            if (scanned != null && scanned.trim().isNotEmpty && mounted) {
+                              setState(() {
+                                _searchCtrl.text = scanned.trim();
+                                _query = scanned.trim();
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.qr_code_scanner),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              if (entries.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 28),
-                  child: Center(
-                    child: Text(
-                      _query.trim().isNotEmpty
-                          ? strings.noInvoicesMatchMsg
-                          : strings.noInvoicesMsg,
-                    ),
-                  ),
-                )
-              else
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(context).size.height * 0.55,
-                  ),
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: entries.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
+                const SizedBox(height: 12),
+                Expanded(
+                  child: entries.isEmpty
+                      ? Center(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            child: Text(
+                              _query.trim().isNotEmpty
+                                  ? strings.noInvoicesMatchMsg
+                                  : strings.noInvoicesMsg,
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: entries.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
                       final entry = entries[index];
                       if (entry.sale != null) {
                         final sale = entry.sale!;
@@ -438,13 +561,33 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                                 ),
                               ],
                             ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => _repeatStockIn(inv),
+                                    icon: const Icon(Icons.replay, size: 18),
+                                    label: Text(strings.repeatStockInBtn),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                IconButton.outlined(
+                                  tooltip: strings.delete,
+                                  color: Theme.of(context).colorScheme.error,
+                                  onPressed: () => _confirmDeleteStockIn(inv),
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       );
                     },
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
         );
       },

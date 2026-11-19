@@ -69,6 +69,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       builder: (_) => InvoicesHistorySheet(
         controller: widget.controller,
         initialFilter: InvoiceHistoryFilter.stockIns,
+        initialDateFilter: _filter,
       ),
     );
   }
@@ -134,6 +135,9 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                 onPressed: _openInvoicesSheet,
                 icon: Badge(
                   isLabelVisible: widget.controller.stockIns.isNotEmpty,
+                  backgroundColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                  textColor: Theme.of(context).colorScheme.onSurfaceVariant,
                   label: Text('${widget.controller.stockIns.length}'),
                   child: const Icon(Icons.description_outlined),
                 ),
@@ -196,21 +200,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                         ),
                         label: Text(strings.incomingPricesBtn),
                         onPressed: _openIncomingPricesSheet,
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ActionChip(
-                        avatar: const Icon(
-                          Icons.description_outlined,
-                          size: 18,
-                        ),
-                        label: Text(
-                          widget.controller.stockIns.isNotEmpty
-                              ? '${strings.stockInvoicesBtn} (${widget.controller.stockIns.length})'
-                              : strings.stockInvoicesBtn,
-                        ),
-                        onPressed: _openInvoicesSheet,
                       ),
                     ),
                     Padding(

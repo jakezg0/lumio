@@ -1,21 +1,31 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/shop_controller.dart';
 import '../widgets/formatters.dart';
 
-class DebtorsSheet extends StatelessWidget {
+class DebtorsSheet extends StatefulWidget {
   const DebtorsSheet({super.key, required this.controller});
 
   final ShopController controller;
 
   @override
+  State<DebtorsSheet> createState() => _DebtorsSheetState();
+}
+
+class _DebtorsSheetState extends State<DebtorsSheet> {
+  bool _showAllHistory = false;
+
+  @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: controller,
+      listenable: widget.controller,
       builder: (context, _) {
-        final strings = controller.strings;
-        final currency = controller.currency;
-        final debtors = controller.debtors;
+        final strings = widget.controller.strings;
+        final currency = widget.controller.currency;
+        final debtors = _showAllHistory
+            ? widget.controller.allDebtCustomers
+            : widget.controller.debtors;
 
         return Padding(
           padding: const EdgeInsets.all(16),
@@ -31,13 +41,34 @@ class DebtorsSheet extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   Text(
-                    formatMoney(controller.totalUnpaidDebt, currency),
+                    formatMoney(widget.controller.totalUnpaidDebt, currency),
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.bold,
                           color: Theme.of(context).colorScheme.error,
                         ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 10),
+              SegmentedButton<bool>(
+                showSelectedIcon: false,
+                segments: [
+                  ButtonSegment(
+                    value: false,
+                    label: Text(
+                      '${strings.activeDebtorsFilter} (${widget.controller.debtors.length})',
+                    ),
+                  ),
+                  ButtonSegment(
+                    value: true,
+                    label: Text(
+                      '${strings.allDebtCustomersFilter} (${widget.controller.allDebtCustomers.length})',
+                    ),
+                  ),
+                ],
+                selected: {_showAllHistory},
+                onSelectionChanged: (val) =>
+                    setState(() => _showAllHistory = val.first),
               ),
               const SizedBox(height: 12),
               if (debtors.isEmpty)
@@ -57,10 +88,10 @@ class DebtorsSheet extends StatelessWidget {
                       final dueText = debtor.earliestDueDate != null
                           ? formatDate(debtor.earliestDueDate!)
                           : null;
-                      final history = debtor.sales
-                          .expand((s) => s.paymentHistory)
-                          .toList()
-                        ..sort((a, b) => b.paidAt.compareTo(a.paidAt));
+                      final displaySales = _showAllHistory
+                          ? debtor.allDebtSales
+                          : debtor.sales;
+                      final hasDebt = debtor.totalDebt > 0.009;
 
                       return Card(
                         margin: EdgeInsets.zero,
@@ -108,51 +139,139 @@ class DebtorsSheet extends StatelessWidget {
                                     style:
                                         Theme.of(context).textTheme.labelSmall,
                                   ),
+                                )
+                              else if (!hasDebt)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.shade100,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    strings.debtPaidBadge,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(color: Colors.green.shade900),
+                                  ),
                                 ),
                             ],
                           ),
-                          subtitle: Text(
-                            '${strings.ordersAndDue(debtor.sales.length, dueText)}\n'
-                            '${formatMoney(debtor.totalDebt, currency)}',
-                          ),
-                          trailing: FilledButton.tonal(
-                            onPressed: () async {
-                              await controller.markAllCustomerDebtsPaid(
-                                debtor.customerName,
-                              );
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(strings.paymentRecorded),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (debtor.phone.isNotEmpty)
+                                InkWell(
+                                  onTap: () async {
+                                    await Clipboard.setData(
+                                      ClipboardData(text: debtor.phone),
+                                    );
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            strings.copiedToClipboardMsg,
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 2,
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.phone_outlined,
+                                          size: 14,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          debtor.phone,
+                                          style: TextStyle(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .primary,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                );
-                              }
-                            },
-                            child: Text(strings.payAllAction),
+                                ),
+                              Text(
+                                strings.debtPurchasesCountLabel(
+                                  debtor.totalDebtPurchasesCount,
+                                  debtor.sales.length,
+                                ),
+                              ),
+                              if (hasDebt)
+                                Text(
+                                  '${formatMoney(debtor.totalDebt, currency)}'
+                                  '${dueText != null ? ' • ${strings.dueDateValue(dueText)}' : ''}',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.error,
+                                  ),
+                                ),
+                            ],
                           ),
+                          trailing: hasDebt
+                              ? FilledButton.tonal(
+                                  onPressed: () async {
+                                    await widget.controller
+                                        .markAllCustomerDebtsPaid(
+                                      debtor.customerName,
+                                    );
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(strings.paymentRecorded),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  child: Text(strings.payAllAction),
+                                )
+                              : null,
                           children: [
-                            for (final sale in debtor.sales)
+                            for (final sale in displaySales)
                               ListTile(
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
                                 title: Text(
-                                  '${formatDateTime(sale.createdAt)} • ${formatMoney(sale.total, currency)}',
+                                  '${formatDateTime(sale.createdAt)} • #${sale.receiptCode} • ${formatMoney(sale.total, currency)}',
                                 ),
                                 subtitle: Text(
-                                  '${strings.paidAmountLabel}: ${formatMoney(sale.paidAmount, currency)} • '
-                                  '${strings.remainingDebtLabel}: ${formatMoney(sale.remainingDebt, currency)}',
+                                  sale.isPaid
+                                      ? strings.paidBadge
+                                      : '${strings.paidAmountLabel}: ${formatMoney(sale.paidAmount, currency)} • '
+                                          '${strings.remainingDebtLabel}: ${formatMoney(sale.remainingDebt, currency)}',
                                 ),
                               ),
-                            if (history.isNotEmpty) ...[
+                            if (debtor.repayments.isNotEmpty) ...[
                               const Divider(height: 12),
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: Text(
-                                  strings.paidAmountLabel,
-                                  style: Theme.of(context).textTheme.labelSmall,
+                                  strings.debtRepaymentsHeader,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                               ),
-                              for (final p in history)
+                              for (final p in debtor.repayments)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 4),
                                   child: Row(
@@ -160,7 +279,7 @@ class DebtorsSheet extends StatelessWidget {
                                         MainAxisAlignment.spaceBetween,
                                     children: [
                                       Text(
-                                        formatDateTime(p.paidAt),
+                                        '${formatDateTime(p.date)} • #${p.receiptCode}',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall,

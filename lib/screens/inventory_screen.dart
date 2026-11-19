@@ -1,7 +1,13 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../models/product.dart';
+import '../services/export_service.dart';
+import '../services/sheet_export_helper.dart';
 import '../state/shop_controller.dart';
 import '../widgets/currency_calculator_dialog.dart';
 import '../widgets/formatters.dart';
@@ -9,10 +15,9 @@ import '../widgets/product_form_sheet.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/stock_in_sheet.dart';
 import '../widgets/stocktake_sheet.dart';
-import 'archive_trash_screen.dart';
 import 'barcode_scanner_screen.dart';
 
-enum _StockFilter { all, inStock, lowStock, outOfStock }
+enum _StockFilter { all, inStock, inMinus, lowStock, outOfStock }
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key, required this.controller});
@@ -48,6 +53,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
           break;
         case _StockFilter.inStock:
           if (product.stock <= 0) return false;
+        case _StockFilter.inMinus:
+          if (product.stock >= 0) return false;
         case _StockFilter.lowStock:
           if (!product.isLowStock && !product.isOutOfStock) return false;
         case _StockFilter.outOfStock:
@@ -347,8 +354,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     if (categories.isEmpty) return;
 
     String? targetCategory = _selectedCategory;
-    if (targetCategory == null) {
-      targetCategory = await showDialog<String>(
+    targetCategory ??= await showDialog<String>(
         context: context,
         builder: (context) => SimpleDialog(
           title: Text(strings.chooseGroupToDelete),
@@ -370,7 +376,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
           ],
         ),
       );
-    }
     if (targetCategory == null || !mounted) return;
     await _confirmDeleteSpecificGroup(targetCategory);
   }
@@ -503,8 +508,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     if (categories.isEmpty) return;
 
     String? fromCategory = _selectedCategory;
-    if (fromCategory == null) {
-      fromCategory = await showDialog<String>(
+    fromCategory ??= await showDialog<String>(
         context: context,
         builder: (context) => SimpleDialog(
           title: Text(strings.moveGroupAction),
@@ -526,7 +530,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
           ],
         ),
       );
-    }
     if (fromCategory == null || !mounted) return;
 
     final toCategory = await _promptTargetGroup(excludeCategory: fromCategory);
@@ -791,10 +794,15 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
-  void _openArchiveTrash() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ArchiveTrashScreen(controller: widget.controller),
+
+  void _openChangeHistory() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _ProductChangeHistorySheet(
+        controller: widget.controller,
+        onOpenProduct: (product) => _openQuickEdit(product),
       ),
     );
   }
@@ -804,6 +812,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
     return ListenableBuilder(
       listenable: widget.controller,
       builder: (context, _) {
+        if (widget.controller.openStockInRequested) {
+          widget.controller.clearOpenStockInRequest();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _openStockIn();
+          });
+        }
         final strings = widget.controller.strings;
         final products = _filteredProducts();
         final categories = widget.controller.categories;
@@ -819,6 +833,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
             : widget.controller.products
                 .where((p) => p.category == _selectedCategory);
         var inStockCount = 0;
+        var inMinusCount = 0;
         var outOfStockCount = 0;
         var groupLowStockCount = 0;
         for (final p in groupProducts) {
@@ -826,6 +841,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
             inStockCount += 1;
           } else {
             outOfStockCount += 1;
+            if (p.stock < 0) {
+              inMinusCount += 1;
+            }
           }
           if (p.isLowStock || p.isOutOfStock) {
             groupLowStockCount += 1;
@@ -840,13 +858,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
             !categories.contains(_selectedCategory)) {
           _selectedCategory = null;
         }
-        final archivedOrTrashed =
-            widget.controller.archiveCount + widget.controller.trashCount;
         final visibleIds = products.map((p) => p.id).toList();
         final allVisibleSelected = visibleIds.isNotEmpty &&
             visibleIds.every((id) => _selectedIds.contains(id));
 
         return Scaffold(
+          resizeToAvoidBottomInset: false,
           appBar: _selectionMode
               ? AppBar(
                   leading: IconButton(
@@ -904,6 +921,25 @@ class _InventoryScreenState extends State<InventoryScreen> {
               : AppBar(
                   title: Text(strings.shopInventory),
                   actions: [
+                    if (!isCashier)
+                      IconButton(
+                        tooltip: strings.changeHistoryBtn,
+                        onPressed: _openChangeHistory,
+                        icon: Badge(
+                          isLabelVisible:
+                              widget.controller.productChanges.isNotEmpty,
+                          backgroundColor: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                          textColor: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                          label: Text(
+                            '${widget.controller.productChanges.length}',
+                          ),
+                          child: const Icon(Icons.history),
+                        ),
+                      ),
                     if (!isCashier)
                       PopupMenuButton<String>(
                         onSelected: (value) {
@@ -1137,6 +1173,33 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: FilterChip(
+                        avatar: inMinusCount > 0
+                            ? Icon(
+                                Icons.warning_amber_rounded,
+                                size: 16,
+                                color: Theme.of(context).colorScheme.error,
+                              )
+                            : null,
+                        label: Text(
+                          strings.inMinusFilter(inMinusCount),
+                          style: inMinusCount > 0
+                              ? TextStyle(
+                                  color: Theme.of(context).colorScheme.error,
+                                  fontWeight: FontWeight.w600,
+                                )
+                              : null,
+                        ),
+                        selected: _stockFilter == _StockFilter.inMinus,
+                        onSelected: (selected) => setState(
+                          () => _stockFilter = selected
+                              ? _StockFilter.inMinus
+                              : _StockFilter.all,
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilterChip(
                         label: Text(strings.outOfStockFilter(outOfStockCount)),
                         selected: _stockFilter == _StockFilter.outOfStock,
                         onSelected: (selected) => setState(
@@ -1172,7 +1235,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     : products.isEmpty
                         ? Center(child: Text(strings.noGoodsMatch))
                         : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 88),
+                            padding: EdgeInsets.fromLTRB(
+                              16,
+                              8,
+                              16,
+                              88 + MediaQuery.viewInsetsOf(context).bottom,
+                            ),
                             itemCount: products.length,
                             separatorBuilder: (_, _) =>
                                 const SizedBox(height: 8),
@@ -1201,10 +1269,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                     _openProductForm(template: product),
                                 onHistory: () => _showProductHistory(product),
                                 onAddToStockIn: () async {
+                                  final messenger = ScaffoldMessenger.of(context);
                                   final totalQty = await widget.controller
                                       .addProductToStockInDraft(product);
                                   if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
+                                    messenger.showSnackBar(
                                       SnackBar(
                                         content: Text(
                                           strings.scannedAddedToStockInMsg(
@@ -1254,10 +1323,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   );
                                 },
                                 onArchive: () async {
+                                  final messenger = ScaffoldMessenger.of(context);
                                   await widget.controller
                                       .archiveProduct(product.id);
                                   if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
+                                    messenger.showSnackBar(
                                       SnackBar(
                                         content: Text(strings.movedToArchiveMsg),
                                       ),
@@ -1440,7 +1510,10 @@ class _ProductCard extends StatelessWidget {
     final Color badgeColor;
     final String stockLabel;
 
-    if (product.isOutOfStock) {
+    if (product.stock < 0) {
+      badgeColor = theme.colorScheme.errorContainer;
+      stockLabel = '${strings.outOfStock} (${product.stock})';
+    } else if (product.isOutOfStock) {
       badgeColor = theme.colorScheme.errorContainer;
       stockLabel = strings.outOfStock;
     } else if (product.isLowStock) {
@@ -1836,20 +1909,22 @@ class _NewGroupDialogState extends State<_NewGroupDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _ctrl,
-        autofocus: true,
-        decoration: InputDecoration(
-          labelText: widget.label,
-          hintText: widget.hint,
-          border: const OutlineInputBorder(),
-          isDense: true,
+      content: SingleChildScrollView(
+        child: TextField(
+          controller: _ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: widget.label,
+            hintText: widget.hint,
+            border: const OutlineInputBorder(),
+            isDense: true,
+          ),
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.of(context).pop(value.trim());
+            }
+          },
         ),
-        onSubmitted: (value) {
-          if (value.trim().isNotEmpty) {
-            Navigator.of(context).pop(value.trim());
-          }
-        },
       ),
       actions: [
         TextButton(
@@ -2210,6 +2285,760 @@ class _ProductHistorySheet extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _ProductChangeHistorySheet extends StatefulWidget {
+  const _ProductChangeHistorySheet({
+    required this.controller,
+    required this.onOpenProduct,
+  });
+
+  final ShopController controller;
+  final ValueChanged<Product> onOpenProduct;
+
+  @override
+  State<_ProductChangeHistorySheet> createState() =>
+      _ProductChangeHistorySheetState();
+}
+
+class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+  String _kindFilter = 'all';
+  String _sourceFilter = 'all';
+  SalesDateFilter _dateFilter = SalesDateFilter.all;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  bool _matchesDateFilter(DateTime dt) {
+    final now = DateTime.now();
+    switch (_dateFilter) {
+      case SalesDateFilter.today:
+        return dt.year == now.year &&
+            dt.month == now.month &&
+            dt.day == now.day;
+      case SalesDateFilter.last7Days:
+        final cutoff = DateTime(now.year, now.month, now.day)
+            .subtract(const Duration(days: 6));
+        return !dt.isBefore(cutoff);
+      case SalesDateFilter.all:
+        return true;
+    }
+  }
+
+  String _fmtNum(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
+  String _resolveKey(ProductChangeField f, dynamic strings) {
+    if (f.key.isNotEmpty) return f.key;
+    if (f.label == strings.sellShort) return 'sellPrice';
+    if (f.label == strings.costShort) return 'costPrice';
+    if (f.kind == 'stock') return 'stock';
+    if (f.kind == 'weight') return 'unitWeight';
+    if (f.label == strings.categoryLabel) return 'category';
+    if (f.label == strings.skuLabel) return 'sku';
+    if (f.label == strings.lowStockAlertLabel) return 'lowStockThreshold';
+    if (f.label == strings.unitMeasureLabel) return 'unit';
+    if (f.label == strings.packQtyLabel) return 'packQty';
+    if (f.label == strings.boxQtyLabel) return 'boxQty';
+    if (f.label == strings.packBarcodeLabel) return 'packBarcode';
+    if (f.label == strings.boxBarcodeLabel) return 'boxBarcode';
+    if (f.label == strings.nomenclatureLabel) return 'nomenclature';
+    if (f.label == strings.printNameLabel) return 'printName';
+    if (f.label == strings.productNameRequired.replaceAll(' *', '')) return 'name';
+    return '';
+  }
+
+  String _currentFieldValue(
+    Product product,
+    ProductChangeField f,
+    dynamic strings,
+  ) {
+    final key = _resolveKey(f, strings);
+    switch (key) {
+      case 'sellPrice':
+        return _fmtNum(product.sellPrice);
+      case 'costPrice':
+        return _fmtNum(product.costPrice);
+      case 'stock':
+        return '${product.stock}';
+      case 'unitWeight':
+        return product.unitWeight.trim().isEmpty ? '—' : product.unitWeight.trim();
+      case 'name':
+        return product.name;
+      case 'category':
+        return product.category;
+      case 'sku':
+        return product.sku.trim().isEmpty ? '—' : product.sku.trim();
+      case 'lowStockThreshold':
+        return '${product.lowStockThreshold}';
+      case 'unit':
+        return product.unit.trim().isEmpty ? '—' : product.unit.trim();
+      case 'packQty':
+        return product.packQty.trim().isEmpty ? '—' : product.packQty.trim();
+      case 'boxQty':
+        return product.boxQty.trim().isEmpty ? '—' : product.boxQty.trim();
+      case 'packBarcode':
+        return product.packBarcode.trim().isEmpty ? '—' : product.packBarcode.trim();
+      case 'boxBarcode':
+        return product.boxBarcode.trim().isEmpty ? '—' : product.boxBarcode.trim();
+      case 'nomenclature':
+        return product.nomenclature.trim().isEmpty ? '—' : product.nomenclature.trim();
+      case 'printName':
+        return product.printName.trim().isEmpty ? '—' : product.printName.trim();
+      default:
+        return f.newValue;
+    }
+  }
+
+  Future<void> _confirmRevert(ProductChangeEntry entry, Product product) async {
+    final strings = widget.controller.strings;
+    final theme = Theme.of(context);
+    final diffs = <({
+      ProductChangeField field,
+      String currentVal,
+      String targetVal,
+      ({String text, Color color})? delta,
+    })>[];
+
+    for (final f in entry.fields) {
+      final currentVal = _currentFieldValue(product, f, strings);
+      final targetVal = f.oldValue;
+      if (currentVal == targetVal) continue;
+      final previewField = ProductChangeField(
+        key: f.key,
+        kind: f.kind,
+        label: f.label,
+        oldValue: currentVal,
+        newValue: targetVal,
+      );
+      diffs.add((
+        field: f,
+        currentVal: currentVal,
+        targetVal: targetVal,
+        delta: _buildDeltaInfo(previewField, theme),
+      ));
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(strings.revertConfirmTitle),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                entry.productName,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                strings.revertPreviewHeader(
+                  strings.changeSourceLabel(entry.source),
+                  formatDateTime(entry.createdAt),
+                ),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (diffs.isEmpty)
+                Text(
+                  strings.revertAlreadyMatchesMsg,
+                  style: theme.textTheme.bodySmall,
+                )
+              else
+                for (final d in diffs)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 2,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          '${d.field.label}: ${d.currentVal} → ${d.targetVal}',
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                        if (d.delta != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: d.delta!.color.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              d.delta!.text,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: d.delta!.color,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(strings.cancel),
+          ),
+          if (diffs.isNotEmpty)
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(strings.revertAction),
+            ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final ok = await widget.controller.revertProductChange(entry.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? strings.revertedMsg : strings.productUnavailableMsg),
+      ),
+    );
+    if (ok) setState(() {});
+  }
+
+  Future<void> _promptDownloadHistory() async {
+    final strings = widget.controller.strings;
+    final days = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(strings.downloadHistoryTitle),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(7),
+            child: Text(strings.filter7Days),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(30),
+            child: Text(strings.period30Days),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(365),
+            child: Text(strings.period1Year),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(730),
+            child: Text(strings.period2Years),
+          ),
+        ],
+      ),
+    );
+    if (days == null || !mounted) return;
+    final entries = widget.controller.productChangesForDays(days);
+    if (entries.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.noChangesForPeriodMsg)),
+      );
+      return;
+    }
+    final csv = ExportService.buildProductChangesCsvWithBom(entries, strings);
+    final stamp = DateTime.now().toIso8601String().split('T').first;
+    final bytes = Uint8List.fromList(utf8.encode(csv));
+    await Share.shareXFiles([
+      XFile.fromData(
+        bytes,
+        name: 'change_history_${days}d_$stamp.csv',
+        mimeType: 'text/csv',
+      ),
+    ]);
+  }
+
+  Future<void> _promptClearHistory() async {
+    final strings = widget.controller.strings;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(strings.clearHistoryTitle),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(strings.cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('30d'),
+            child: Text(strings.clearOlder30DaysAction),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop('all'),
+            child: Text(strings.clearAllAction),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    final removed = await widget.controller.clearProductChanges(
+      olderThanDays: choice == '30d' ? 30 : null,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(strings.clearedHistoryCountMsg(removed))),
+    );
+    setState(() {});
+  }
+
+  String _formatDeltaNum(double delta) {
+    final absVal = delta.abs();
+    final numStr = absVal == absVal.roundToDouble()
+        ? absVal.toStringAsFixed(0)
+        : absVal.toStringAsFixed(2);
+    return delta > 0 ? '+$numStr' : '−$numStr';
+  }
+
+  ({String text, Color color})? _buildDeltaInfo(
+    ProductChangeField field,
+    ThemeData theme,
+  ) {
+    if (field.kind != 'price' && field.kind != 'stock') return null;
+    final oldNum = double.tryParse(field.oldValue.replaceAll(',', '.').trim());
+    final newNum = double.tryParse(field.newValue.replaceAll(',', '.').trim());
+    if (oldNum == null || newNum == null) return null;
+    final delta = newNum - oldNum;
+    if (delta.abs() <= 0.009) return null;
+
+    final buffer = StringBuffer(_formatDeltaNum(delta));
+    if (field.kind == 'price' && oldNum > 0.009) {
+      final pct = (delta / oldNum) * 100;
+      final pctStr = pct.abs() >= 10
+          ? pct.toStringAsFixed(0)
+          : pct.toStringAsFixed(1);
+      buffer.write(' (${delta > 0 ? '+' : ''}$pctStr%)');
+    }
+    final color = delta > 0
+        ? Colors.green.shade700
+        : theme.colorScheme.error;
+    return (text: buffer.toString(), color: color);
+  }
+
+  String _bucketTitle(DateTime dt, dynamic strings) {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+    final weekStart = todayStart.subtract(const Duration(days: 6));
+    if (!dt.isBefore(todayStart)) return strings.filterToday;
+    if (!dt.isBefore(yesterdayStart)) return strings.yesterdayLabel;
+    if (!dt.isBefore(weekStart)) return strings.thisWeekLabel;
+    return strings.earlierLabel;
+  }
+
+  String _formatTimeOnly(DateTime dt) {
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = widget.controller.strings;
+    final theme = Theme.of(context);
+    final q = _query.trim().toLowerCase();
+    final entries = widget.controller.productChanges.where((e) {
+      if (!_matchesDateFilter(e.createdAt)) return false;
+      if (_kindFilter != 'all' && !e.hasKind(_kindFilter)) return false;
+      if (_sourceFilter != 'all' && e.source != _sourceFilter) return false;
+      if (q.isEmpty) return true;
+      return e.productName.toLowerCase().contains(q) ||
+          e.fields.any((f) => f.label.toLowerCase().contains(q));
+    }).toList();
+
+    final List<({String? header, ProductChangeEntry? entry})> rows = [];
+    String? lastBucket;
+    for (final entry in entries) {
+      final bucket = _bucketTitle(entry.createdAt, strings);
+      if (bucket != lastBucket) {
+        rows.add((header: bucket, entry: null));
+        lastBucket = bucket;
+      }
+      rows.add((header: null, entry: entry));
+    }
+
+    return SizedBox(
+      height: MediaQuery.sizeOf(context).height * 0.90,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          16,
+          16,
+          16,
+          16 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    strings.changeHistoryBtn,
+                    style: theme.textTheme.titleLarge,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (widget.controller.productChanges.isNotEmpty) ...[
+                  IconButton(
+                    tooltip: strings.copyTsvShortBtn,
+                    onPressed: () {
+                      final tsv = SheetExportHelper.buildTsv(
+                        SheetExportSection.changes,
+                        widget.controller,
+                      );
+                      Clipboard.setData(ClipboardData(text: tsv));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(strings.copiedForSheetsMsg)),
+                      );
+                    },
+                    icon: const Icon(Icons.content_copy),
+                  ),
+                  IconButton(
+                    tooltip: strings.downloadHistoryBtn,
+                    onPressed: _promptDownloadHistory,
+                    icon: const Icon(Icons.download_outlined),
+                  ),
+                  IconButton(
+                    tooltip: strings.clearHistoryBtn,
+                    onPressed: _promptClearHistory,
+                    icon: const Icon(Icons.delete_sweep_outlined),
+                  ),
+                ],
+                IconButton(
+                  tooltip: strings.close,
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _searchCtrl,
+              onChanged: (v) => setState(() => _query = v),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: strings.searchGoodsHint,
+                isDense: true,
+                border: const OutlineInputBorder(),
+                suffixIcon: _query.isNotEmpty
+                    ? IconButton(
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          setState(() => _query = '');
+                        },
+                        icon: const Icon(Icons.clear),
+                      )
+                    : null,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<SalesDateFilter>(
+              showSelectedIcon: false,
+              segments: [
+                ButtonSegment(
+                  value: SalesDateFilter.today,
+                  label: Text(
+                    strings.filterToday,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                ButtonSegment(
+                  value: SalesDateFilter.last7Days,
+                  label: Text(
+                    strings.filter7Days,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                ButtonSegment(
+                  value: SalesDateFilter.all,
+                  label: Text(
+                    strings.filterAll,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+              selected: {_dateFilter},
+              onSelectionChanged: (val) =>
+                  setState(() => _dateFilter = val.first),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 38,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  for (final item in [
+                    ('all', strings.allCategory),
+                    ('price', strings.filterPrice),
+                    ('stock', strings.filterStock),
+                    ('weight', strings.filterWeight),
+                    ('other', strings.filterOther),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        visualDensity: VisualDensity.compact,
+                        label: Text(item.$2),
+                        selected: _kindFilter == item.$1,
+                        onSelected: (_) => setState(() => _kindFilter = item.$1),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            SizedBox(
+              height: 38,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  for (final item in [
+                    ('all', strings.allSourcesLabel),
+                    ('edit', strings.changeSourceLabel('edit')),
+                    ('create', strings.changeSourceLabel('create')),
+                    ('stock_in', strings.changeSourceLabel('stock_in')),
+                    ('stock_in_delete', strings.changeSourceLabel('stock_in_delete')),
+                    ('stocktake', strings.changeSourceLabel('stocktake')),
+                    ('sync', strings.changeSourceLabel('sync')),
+                    ('archive', strings.changeSourceLabel('archive')),
+                    ('trash', strings.changeSourceLabel('trash')),
+                    ('restore', strings.changeSourceLabel('restore')),
+                    ('revert', strings.changeSourceLabel('revert')),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        visualDensity: VisualDensity.compact,
+                        label: Text(item.$2),
+                        selected: _sourceFilter == item.$1,
+                        onSelected: (_) =>
+                            setState(() => _sourceFilter = item.$1),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: entries.isEmpty
+                  ? Center(child: Text(strings.noChangesYetMsg))
+                  : ListView.builder(
+                      itemCount: rows.length,
+                      itemBuilder: (_, index) {
+                        final row = rows[index];
+                        if (row.header != null) {
+                          return Padding(
+                            padding: EdgeInsets.only(
+                              top: index == 0 ? 4 : 12,
+                              bottom: 6,
+                              left: 2,
+                            ),
+                            child: Text(
+                              row.header!,
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
+                          );
+                        }
+                        final entry = row.entry!;
+                        final product = widget.controller
+                            .findProductById(entry.productId);
+                        final isActive =
+                            product != null && product.isActive;
+                        final bucket = _bucketTitle(entry.createdAt, strings);
+                        final isRecentDay = bucket == strings.filterToday ||
+                            bucket == strings.yesterdayLabel;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Card(
+                            margin: EdgeInsets.zero,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(12),
+                              onTap: () {
+                                if (isActive) {
+                                  Navigator.of(context).pop();
+                                  widget.onOpenProduct(product);
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content:
+                                          Text(strings.productUnavailableMsg),
+                                    ),
+                                  );
+                                }
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            entry.productName,
+                                            style: theme.textTheme.titleSmall
+                                                ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 2,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: theme.colorScheme
+                                                .surfaceContainerHighest,
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                          ),
+                                          child: Text(
+                                            strings.changeSourceLabel(
+                                              entry.source,
+                                            ),
+                                            style: theme.textTheme.labelSmall,
+                                          ),
+                                        ),
+                                        if (isActive) ...[
+                                          const SizedBox(width: 4),
+                                          Icon(
+                                            Icons.chevron_right,
+                                            size: 18,
+                                            color: theme
+                                                .colorScheme.onSurfaceVariant,
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      isRecentDay
+                                          ? _formatTimeOnly(entry.createdAt)
+                                          : formatDateTime(entry.createdAt),
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(
+                                        color:
+                                            theme.colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    for (final f in entry.fields)
+                                      Builder(
+                                        builder: (_) {
+                                          final deltaInfo =
+                                              _buildDeltaInfo(f, theme);
+                                          return Padding(
+                                            padding: const EdgeInsets.only(
+                                              bottom: 3,
+                                            ),
+                                            child: Wrap(
+                                              spacing: 6,
+                                              runSpacing: 2,
+                                              crossAxisAlignment:
+                                                  WrapCrossAlignment.center,
+                                              children: [
+                                                Text(
+                                                  '${f.label}: ${f.oldValue} → ${f.newValue}',
+                                                  style: theme
+                                                      .textTheme.bodySmall,
+                                                ),
+                                                if (deltaInfo != null)
+                                                  Container(
+                                                    padding: const EdgeInsets
+                                                        .symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 1,
+                                                    ),
+                                                    decoration: BoxDecoration(
+                                                      color: deltaInfo.color
+                                                          .withValues(
+                                                        alpha: 0.12,
+                                                      ),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                        6,
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      deltaInfo.text,
+                                                      style: theme
+                                                          .textTheme.labelSmall
+                                                          ?.copyWith(
+                                                        color: deltaInfo.color,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    if (isActive &&
+                                        entry.source != 'revert' &&
+                                        entry.source != 'create' &&
+                                        entry.source != 'archive' &&
+                                        entry.source != 'trash' &&
+                                        entry.source != 'restore')
+                                      Align(
+                                        alignment: Alignment.centerRight,
+                                        child: TextButton.icon(
+                                          style: TextButton.styleFrom(
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 0,
+                                            ),
+                                          ),
+                                          onPressed: () =>
+                                              _confirmRevert(entry, product),
+                                          icon: const Icon(
+                                            Icons.undo,
+                                            size: 16,
+                                          ),
+                                          label: Text(strings.revertAction),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }

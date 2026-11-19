@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:local_auth/local_auth.dart';
 
 import '../l10n/app_strings.dart';
 import '../screens/archive_trash_screen.dart';
@@ -22,6 +24,37 @@ class SettingsButton extends StatelessWidget {
         controller.cashierMode ? Icons.lock_outline : Icons.settings_outlined,
       ),
     );
+  }
+
+  Future<bool> _authenticateWithDevice(BuildContext context) async {
+    final strings = controller.strings;
+    final auth = LocalAuthentication();
+    try {
+      final isSupported = await auth.isDeviceSupported();
+      final canCheck = await auth.canCheckBiometrics;
+      if (!isSupported && !canCheck) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(strings.biometricUnavailableMsg)),
+          );
+        }
+        return false;
+      }
+      return await auth.authenticate(
+        localizedReason: strings.biometricPromptReason,
+        options: const AuthenticationOptions(
+          stickyAuth: true,
+          biometricOnly: false,
+        ),
+      );
+    } on PlatformException {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(strings.biometricUnavailableMsg)),
+        );
+      }
+      return false;
+    }
   }
 
   Future<void> _openShopProfileDialog(BuildContext context) async {
@@ -59,22 +92,37 @@ class SettingsButton extends StatelessWidget {
 
   Future<void> _openPinSetupDialog(BuildContext context) async {
     final strings = controller.strings;
-    final pin = await showDialog<String>(
+    final result = await showDialog<String>(
       context: context,
-      builder: (_) => _PinPromptDialog(
-        title: strings.setOwnerPinBtn,
-        hintLabel: strings.enterPinHint,
-        cancelLabel: strings.cancel,
-        confirmLabel: strings.saveChanges,
-        initialPin: controller.ownerPin,
+      builder: (_) => _ChangePinDialog(
+        strings: strings,
+        existingPin: controller.ownerPin,
       ),
     );
-    if (pin == null) return;
-    await controller.setOwnerPin(pin);
+    if (result == null) return;
+    await controller.setOwnerPin(result);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.pinUpdatedMsg)),
+        SnackBar(
+          content: Text(
+            result.isEmpty ? strings.pinRemovedMsg : strings.pinUpdatedMsg,
+          ),
+        ),
       );
+    }
+  }
+
+  Future<void> _toggleBiometricUnlock(
+    BuildContext context,
+    bool enable,
+  ) async {
+    if (!enable) {
+      await controller.setUseBiometricUnlock(false);
+      return;
+    }
+    final ok = await _authenticateWithDevice(context);
+    if (ok) {
+      await controller.setUseBiometricUnlock(true);
     }
   }
 
@@ -88,7 +136,7 @@ class SettingsButton extends StatelessWidget {
       return;
     }
 
-    if (!controller.hasOwnerPin) {
+    if (!controller.hasOwnerAuth) {
       if (dialogContext.mounted) {
         Navigator.of(dialogContext).pop();
       }
@@ -96,6 +144,26 @@ class SettingsButton extends StatelessWidget {
       return;
     }
 
+    if (controller.useBiometricUnlock) {
+      final verified = await _authenticateWithDevice(dialogContext);
+      if (verified) {
+        if (dialogContext.mounted) {
+          Navigator.of(dialogContext).pop();
+        }
+        await controller.unlockOwnerByBiometrics();
+        return;
+      }
+      if (!controller.hasOwnerPin) {
+        if (dialogContext.mounted) {
+          ScaffoldMessenger.of(dialogContext).showSnackBar(
+            SnackBar(content: Text(strings.biometricFailedMsg)),
+          );
+        }
+        return;
+      }
+    }
+
+    if (!dialogContext.mounted) return;
     final attempt = await showDialog<String>(
       context: dialogContext,
       builder: (_) => _PinPromptDialog(
@@ -104,10 +172,24 @@ class SettingsButton extends StatelessWidget {
         cancelLabel: strings.cancel,
         confirmLabel: strings.confirm,
         autofocus: true,
+        biometricBtnLabel:
+            controller.useBiometricUnlock ? strings.useBiometricBtn : null,
       ),
     );
 
     if (attempt == null) return;
+    if (attempt == _PinPromptDialog.biometricSentinel) {
+      if (!dialogContext.mounted) return;
+      final verified = await _authenticateWithDevice(dialogContext);
+      if (verified) {
+        if (dialogContext.mounted) {
+          Navigator.of(dialogContext).pop();
+        }
+        await controller.unlockOwnerByBiometrics();
+      }
+      return;
+    }
+
     final ok = await controller.exitCashierMode(attempt);
     if (ok) {
       if (dialogContext.mounted) {
@@ -160,107 +242,319 @@ class SettingsButton extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    strings.languageLabel,
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      ChoiceChip(
-                        label: Text(strings.autoLanguageLabel),
-                        selected: controller.followSystemLanguage,
-                        onSelected: (_) => controller.setFollowSystemLanguage(),
+                  const SizedBox(height: 4),
+                  Card(
+                    margin: EdgeInsets.zero,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
                       ),
-                      for (final lang in AppLanguage.values)
-                        ChoiceChip(
-                          label: Text(lang.displayName),
-                          selected: !controller.followSystemLanguage &&
-                              controller.language == lang,
-                          onSelected: (_) => controller.setLanguage(lang),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    strings.currencyLabel,
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final currency in AppCurrency.values)
-                        ChoiceChip(
-                          label: Text('${currency.code} (${currency.symbol})'),
-                          selected: controller.currency == currency,
-                          onSelected: (_) => controller.setCurrency(currency),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton.tonalIcon(
-                    onPressed: () => _toggleCashierMode(sheetContext),
-                    icon: Icon(
-                      isCashier
-                          ? Icons.lock_open_outlined
-                          : Icons.lock_outline,
                     ),
-                    label: Text(
-                      isCashier
-                          ? strings.unlockOwnerMode
-                          : strings.switchToCashier,
+                    clipBehavior: Clip.antiAlias,
+                    child: ExpansionTile(
+                      dense: true,
+                      leading: const Icon(Icons.language, size: 20),
+                      title: Text(
+                        '${strings.languageLabel}, ${strings.currencyLabel}',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      subtitle: Text(
+                        '${controller.followSystemLanguage ? '${controller.language == AppLanguage.en ? 'Auto' : 'Авто'} (${controller.language.code})' : controller.language.displayName} • ${controller.currency.symbol} ${controller.currency.code}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      shape: const Border(),
+                      collapsedShape: const Border(),
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SegmentedButton<AppLanguage?>(
+                              showSelectedIcon: false,
+                              style: SegmentedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              segments: [
+                                ButtonSegment<AppLanguage?>(
+                                  value: null,
+                                  label: Text(
+                                    controller.language == AppLanguage.en
+                                        ? 'Auto'
+                                        : 'Авто',
+                                  ),
+                                ),
+                                for (final lang in AppLanguage.values)
+                                  ButtonSegment<AppLanguage?>(
+                                    value: lang,
+                                    label: Text(lang.code),
+                                  ),
+                              ],
+                              selected: {
+                                controller.followSystemLanguage
+                                    ? null
+                                    : controller.language,
+                              },
+                              onSelectionChanged: (val) {
+                                final lang = val.first;
+                                if (lang == null) {
+                                  controller.setFollowSystemLanguage();
+                                } else {
+                                  controller.setLanguage(lang);
+                                }
+                              },
+                            ),
+                            const SizedBox(height: 8),
+                            SegmentedButton<AppCurrency>(
+                              showSelectedIcon: false,
+                              style: SegmentedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              segments: [
+                                for (final currency in AppCurrency.values)
+                                  ButtonSegment<AppCurrency>(
+                                    value: currency,
+                                    label: Text(
+                                      '${currency.symbol} ${currency.code}',
+                                    ),
+                                  ),
+                              ],
+                              selected: {controller.currency},
+                              onSelectionChanged: (val) =>
+                                  controller.setCurrency(val.first),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    strings.accessSectionLabel,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 6),
+                  Card(
+                    margin: EdgeInsets.zero,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ListTile(
+                          dense: true,
+                          leading: Icon(
+                            isCashier
+                                ? Icons.lock_open_outlined
+                                : Icons.lock_outline,
+                          ),
+                          title: Text(
+                            isCashier
+                                ? strings.unlockOwnerMode
+                                : strings.switchToCashier,
+                          ),
+                          subtitle: Text(
+                            isCashier
+                                ? strings.cashierModeActiveStatus
+                                : strings.ownerModeActiveStatus,
+                          ),
+                          trailing: const Icon(Icons.chevron_right, size: 20),
+                          onTap: () => _toggleCashierMode(sheetContext),
+                        ),
+                        if (!isCashier) ...[
+                          const Divider(height: 1),
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.pin_outlined),
+                            title: Text(strings.setOwnerPinBtn),
+                            subtitle: Text(
+                              controller.hasOwnerPin
+                                  ? strings.pinIsSetStatus
+                                  : strings.pinNotSetStatus,
+                              style: TextStyle(
+                                color: controller.hasOwnerPin
+                                    ? Colors.green.shade700
+                                    : Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                              ),
+                            ),
+                            trailing: const Icon(Icons.chevron_right, size: 20),
+                            onTap: () => _openPinSetupDialog(sheetContext),
+                          ),
+                          const Divider(height: 1),
+                          SwitchListTile(
+                            dense: true,
+                            secondary: const Icon(Icons.fingerprint),
+                            title: Text(strings.biometricUnlockLabel),
+                            subtitle: Text(strings.biometricUnlockHint),
+                            value: controller.useBiometricUnlock,
+                            onChanged: (v) =>
+                                _toggleBiometricUnlock(sheetContext, v),
+                          ),
+                          const Divider(height: 1),
+                          SwitchListTile(
+                            dense: true,
+                            secondary:
+                                const Icon(Icons.exposure_neg_1_outlined),
+                            title: Text(strings.allowNegativeStockLabel),
+                            subtitle: Text(strings.allowNegativeStockHint),
+                            value: controller.allowNegativeStock,
+                            onChanged: controller.setAllowNegativeStock,
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                   if (!isCashier) ...[
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.of(sheetContext).pop();
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) =>
-                                ArchiveTrashScreen(controller: controller),
+                    const SizedBox(height: 14),
+                    Text(
+                      strings.shopAndDataSectionLabel,
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.w700,
                           ),
-                        );
-                      },
-                      icon: const Icon(Icons.archive_outlined),
-                      label: Text(
-                        (controller.archiveCount + controller.trashCount) > 0
-                            ? '${strings.archiveAndTrash} (${controller.archiveCount + controller.trashCount})'
-                            : strings.archiveAndTrash,
+                    ),
+                    const SizedBox(height: 6),
+                    Card(
+                      margin: EdgeInsets.zero,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => _openPinSetupDialog(sheetContext),
-                      icon: const Icon(Icons.pin_outlined),
-                      label: Text(strings.setOwnerPinBtn),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => _openShopProfileDialog(sheetContext),
-                      icon: const Icon(Icons.storefront_outlined),
-                      label: Text(strings.shopProfileBtn),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.of(sheetContext).pop();
-                        showModalBottomSheet<void>(
-                          context: context,
-                          isScrollControlled: true,
-                          useSafeArea: true,
-                          builder: (_) =>
-                              BackupExportSheet(controller: controller),
-                        );
-                      },
-                      icon: const Icon(Icons.import_export),
-                      label: Text(strings.backupAndExport),
+                      clipBehavior: Clip.antiAlias,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.storefront_outlined),
+                            title: Text(strings.shopProfileBtn),
+                            subtitle: Text(
+                              controller.shopPhone.isNotEmpty
+                                  ? '${controller.shopName} • ${controller.shopPhone}'
+                                  : controller.shopName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing:
+                                const Icon(Icons.chevron_right, size: 20),
+                            onTap: () => _openShopProfileDialog(sheetContext),
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.table_chart_outlined),
+                            title: Text(strings.googleSheetsBtn),
+                            subtitle: Text(
+                              controller.googleSheetsUrl.isNotEmpty
+                                  ? strings.connectedStatus
+                                  : strings.notConfiguredStatus,
+                              style: TextStyle(
+                                color: controller.googleSheetsUrl.isNotEmpty
+                                    ? Colors.green.shade700
+                                    : Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                              ),
+                            ),
+                            trailing:
+                                const Icon(Icons.chevron_right, size: 20),
+                            onTap: () {
+                              Navigator.of(sheetContext).pop();
+                              showModalBottomSheet<void>(
+                                context: context,
+                                isScrollControlled: true,
+                                useSafeArea: true,
+                                builder: (_) =>
+                                    GoogleSheetsSheet(controller: controller),
+                              );
+                            },
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.import_export),
+                            title: Text(strings.backupAndExport),
+                            subtitle: Text(
+                              'CSV / JSON • ${controller.products.length}',
+                            ),
+                            trailing:
+                                const Icon(Icons.chevron_right, size: 20),
+                            onTap: () {
+                              Navigator.of(sheetContext).pop();
+                              showModalBottomSheet<void>(
+                                context: context,
+                                isScrollControlled: true,
+                                useSafeArea: true,
+                                builder: (_) =>
+                                    BackupExportSheet(controller: controller),
+                              );
+                            },
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.archive_outlined),
+                            title: Text(strings.archiveAndTrash),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if ((controller.archiveCount +
+                                        controller.trashCount) >
+                                    0)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .surfaceContainerHighest,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Text(
+                                      '${controller.archiveCount + controller.trashCount}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall,
+                                    ),
+                                  ),
+                                const SizedBox(width: 4),
+                                const Icon(Icons.chevron_right, size: 20),
+                              ],
+                            ),
+                            onTap: () {
+                              Navigator.of(sheetContext).pop();
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => ArchiveTrashScreen(
+                                    controller: controller,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ],
@@ -281,7 +575,10 @@ class _PinPromptDialog extends StatefulWidget {
     required this.confirmLabel,
     this.initialPin = '',
     this.autofocus = false,
+    this.biometricBtnLabel,
   });
+
+  static const String biometricSentinel = '__USE_BIOMETRIC__';
 
   final String title;
   final String hintLabel;
@@ -289,6 +586,7 @@ class _PinPromptDialog extends StatefulWidget {
   final String confirmLabel;
   final String initialPin;
   final bool autofocus;
+  final String? biometricBtnLabel;
 
   @override
   State<_PinPromptDialog> createState() => _PinPromptDialogState();
@@ -313,16 +611,33 @@ class _PinPromptDialogState extends State<_PinPromptDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _pinCtrl,
-        autofocus: widget.autofocus,
-        keyboardType: TextInputType.number,
-        obscureText: true,
-        decoration: InputDecoration(
-          labelText: widget.hintLabel,
-          border: const OutlineInputBorder(),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _pinCtrl,
+              autofocus: widget.autofocus,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: widget.hintLabel,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (value) => Navigator.of(context).pop(value),
+            ),
+            if (widget.biometricBtnLabel != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () =>
+                    Navigator.of(context).pop(_PinPromptDialog.biometricSentinel),
+                icon: const Icon(Icons.fingerprint),
+                label: Text(widget.biometricBtnLabel!),
+              ),
+            ],
+          ],
         ),
-        onSubmitted: (value) => Navigator.of(context).pop(value),
       ),
       actions: [
         TextButton(
@@ -332,6 +647,145 @@ class _PinPromptDialogState extends State<_PinPromptDialog> {
         FilledButton(
           onPressed: () => Navigator.of(context).pop(_pinCtrl.text),
           child: Text(widget.confirmLabel),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChangePinDialog extends StatefulWidget {
+  const _ChangePinDialog({
+    required this.strings,
+    required this.existingPin,
+  });
+
+  final AppStrings strings;
+  final String existingPin;
+
+  @override
+  State<_ChangePinDialog> createState() => _ChangePinDialogState();
+}
+
+class _ChangePinDialogState extends State<_ChangePinDialog> {
+  final TextEditingController _currentCtrl = TextEditingController();
+  final TextEditingController _newCtrl = TextEditingController();
+  final TextEditingController _confirmCtrl = TextEditingController();
+  String? _error;
+
+  bool get _hasExisting => widget.existingPin.isNotEmpty;
+
+  @override
+  void dispose() {
+    _currentCtrl.dispose();
+    _newCtrl.dispose();
+    _confirmCtrl.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final s = widget.strings;
+    if (_hasExisting && _currentCtrl.text.trim() != widget.existingPin) {
+      setState(() => _error = s.wrongPinMsg);
+      return;
+    }
+    final nextPin = _newCtrl.text.trim();
+    final confirmPin = _confirmCtrl.text.trim();
+    if (nextPin.isEmpty) {
+      setState(() => _error = s.enterPinHint);
+      return;
+    }
+    if (nextPin != confirmPin) {
+      setState(() => _error = s.pinsDoNotMatchMsg);
+      return;
+    }
+    Navigator.of(context).pop(nextPin);
+  }
+
+  void _remove() {
+    final s = widget.strings;
+    if (_hasExisting && _currentCtrl.text.trim() != widget.existingPin) {
+      setState(() => _error = s.wrongPinMsg);
+      return;
+    }
+    Navigator.of(context).pop('');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.strings;
+    return AlertDialog(
+      title: Text(_hasExisting ? s.changePinTitle : s.setOwnerPinBtn),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_hasExisting) ...[
+              TextField(
+                controller: _currentCtrl,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: s.currentPinLabel,
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            TextField(
+              controller: _newCtrl,
+              autofocus: !_hasExisting,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: s.newPinLabel,
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _confirmCtrl,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: s.confirmPinLabel,
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+              onSubmitted: (_) => _save(),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        if (_hasExisting)
+          TextButton(
+            onPressed: _remove,
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: Text(s.removePinAction),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(s.cancel),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: Text(s.saveChanges),
         ),
       ],
     );

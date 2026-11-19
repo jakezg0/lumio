@@ -15,7 +15,7 @@ String formatMoney(double amount, [AppCurrency currency = AppCurrency.kzt]) {
 
   final signed = negative ? '-$formattedNumber' : formattedNumber;
   if (currency == AppCurrency.usd) {
-    return negative ? '-\$${formattedNumber}' : '\$$formattedNumber';
+    return negative ? '-\$$formattedNumber' : '\$$formattedNumber';
   }
   return '$signed ${currency.symbol}';
 }

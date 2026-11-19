@@ -950,4 +950,515 @@ class AppStrings {
         'Отправить отчёт поставщику',
         'Жеткізушіге есеп жіберу',
       );
+  String get addProductToReceiptBtn => _pick(
+        'Add Item to Receipt',
+        'Добавить товар в чек',
+        'Чекке тауар қосу',
+      );
+  String get googleSheetsBtn => _pick(
+        'Google Sheets Sync',
+        'Синхронизация с Google Таблицей',
+        'Google Кестемен синхрондау',
+      );
+  String get sheetsWebAppUrlLabel => _pick(
+        'Apps Script Web App URL *',
+        'URL веб-приложения Apps Script *',
+        'Apps Script веб-қосымшасының URL-і *',
+      );
+  String get sheetsSecretLabel => _pick(
+        'Secret Key (optional)',
+        'Секретный ключ (необязательно)',
+        'Құпия кілт (міндетті емес)',
+      );
+  String get copyAppsScriptBtn => _pick(
+        'Copy Apps Script',
+        'Копировать скрипт для таблицы',
+        'Кестеге арналған скриптті көшіру',
+      );
+  String get checkAndSyncBtn => _pick(
+        'Check & Compare',
+        'Проверить и сравнить',
+        'Тексеру және салыстыру',
+      );
+  String get pushAllToSheetsBtn => _pick(
+        'Upload All to Sheets',
+        'Выгрузить всё в таблицу',
+        'Барлығын кестеге жүктеу',
+      );
+  String get applySyncBtn => _pick(
+        'Apply Sync',
+        'Применить синхронизацию',
+        'Синхрондауды қолдану',
+      );
+  String get syncNoDifferencesMsg => _pick(
+        'Everything is in sync. No differences found.',
+        'Всё совпадает. Расхождений и конфликтов не найдено.',
+        'Барлығы сәйкес келеді. Айырмашылық табылмады.',
+      );
+  String syncConflictsCount(int count) => _pick(
+        'Conflicts: $count',
+        'Конфликты: $count',
+        'Қайшылықтар: $count',
+      );
+  String syncNewFromSheetCount(int count) => _pick(
+        'New in Sheet: $count',
+        'Новые из таблицы: $count',
+        'Кестедегі жаңа: $count',
+      );
+  String syncNewOnPhoneCount(int count) => _pick(
+        'New on Phone: $count',
+        'Новые с телефона: $count',
+        'Телефондағы жаңа: $count',
+      );
+  String get useSheetValueBtn => _pick(
+        'From Sheet',
+        'Из таблицы',
+        'Кестеден',
+      );
+  String get keepPhoneValueBtn => _pick(
+        'Keep Phone',
+        'С телефона',
+        'Телефоннан',
+      );
+  String get allFromSheetBtn => _pick(
+        'All from Sheet',
+        'Все из таблицы',
+        'Барлығын кестеден',
+      );
+  String get allFromPhoneBtn => _pick(
+        'All from Phone',
+        'Все с телефона',
+        'Барлығын телефоннан',
+      );
+  String get phoneLabel => _pick('Phone', 'Телефон', 'Телефон');
+  String get sheetLabel => _pick('Sheet', 'Таблица', 'Кесте');
+  String get syncCompletedMsg => _pick(
+        'Google Sheets sync completed',
+        'Синхронизация с Google Таблицей завершена',
+        'Google Кестемен синхрондау аяқталды',
+      );
+  String get enterSheetsUrlMsg => _pick(
+        'Enter your Apps Script Web App URL first',
+        'Сначала укажите URL веб-приложения Apps Script',
+        'Алдымен Apps Script URL мекенжайын енгізіңіз',
+      );
+  String get copyForGoogleSheetsBtn => _pick(
+        'Copy for Google Sheets (Paste to A1)',
+        'Копировать для Google Таблицы (в A1)',
+        'Google Кесте үшін көшіру (A1-ге қою)',
+      );
+  String get shareReadableCsvBtn => _pick(
+        'Share Readable Table (CSV)',
+        'Отправить читаемую таблицу (CSV)',
+        'Оқылатын кестені жіберу (CSV)',
+      );
+  String get copyImportTemplateBtn => _pick(
+        'Copy Import Template',
+        'Скопировать шаблон импорта',
+        'Импорт үлгісін көшіру',
+      );
+  String get importFromTableBtn => _pick(
+        'Import Goods (Paste Table / CSV)',
+        'Импорт товаров (из таблицы / CSV)',
+        'Тауарларды импорттау (кесте / CSV)',
+      );
+  String get pasteTableHint => _pick(
+        'Paste rows copied from Google Sheets, Excel, or CSV...',
+        'Вставьте строки из Google Таблицы, Excel или CSV...',
+        'Google Кесте, Excel немесе CSV жолдарын осында қойыңыз...',
+      );
+  String get checkImportBtn => _pick(
+        'Check & Preview',
+        'Проверить',
+        'Тексеру',
+      );
+  String get importNoRowsMsg => _pick(
+        'No valid product rows found. Check column headers or use the template.',
+        'Не найдено товаров. Проверьте заголовки столбцов или используйте шаблон.',
+        'Тауар жолдары табылмады. Баған атауларын тексеріңіз немесе үлгіні қолданыңыз.',
+      );
+  String importCompletedMsg(int updated, int added) => _pick(
+        'Imported: updated $updated, added $added',
+        'Импорт завершён: обновлено $updated, добавлено $added',
+        'Импорт аяқталды: жаңартылды $updated, қосылды $added',
+      );
+  String get copiedForSheetsMsg => _pick(
+        'Copied! Open Google Sheets and paste into cell A1.',
+        'Скопировано! Откройте Google Таблицу и вставьте в ячейку A1.',
+        'Көшірілді! Google Кестені ашып, A1 ұяшығына қойыңыз.',
+      );
+  String get copiedTemplateMsg => _pick(
+        'Template copied! Paste into Google Sheets/Notes, edit, and import back.',
+        'Шаблон скопирован! Вставьте в таблицу или заметки, заполните и импортируйте.',
+        'Үлгі көшірілді! Кестеге қойып, толтырып, қайта импорттаңыз.',
+      );
+  String get totalPurchasesForPeriodLabel => _pick(
+        'Purchases for period',
+        'Закупки за период',
+        'Кезеңдегі сатып алу',
+      );
+  String get repeatStockInBtn => _pick(
+        'Repeat Stock-In',
+        'Повторить приход',
+        'Кірісті қайталау',
+      );
+  String get deleteStockInTitle => _pick(
+        'Delete invoice?',
+        'Удалить накладную?',
+        'Жүкқұжатты жою керек пе?',
+      );
+  String deleteStockInBody(int units) => _pick(
+        'Delete this stock-in invoice and roll back stock (-$units units)?',
+        'Удалить приходную накладную и откатить остатки на складе (−$units шт.)?',
+        'Бұл кіріс жүкқұжатын жойып, қойма қалдығын қайтару керек пе (−$units дана)?',
+      );
+  String get stockInDeletedMsg => _pick(
+        'Invoice deleted, stock rolled back',
+        'Накладная удалена, остатки откатаны',
+        'Жүкқұжат жойылды, қалдық қайтарылды',
+      );
+  String get changeHistoryBtn => _pick(
+        'Change History',
+        'История изменений',
+        'Өзгерістер тарихы',
+      );
+  String get noChangesYetMsg => _pick(
+        'No product changes recorded yet.',
+        'Изменений по товарам пока не зафиксировано.',
+        'Тауарлар бойынша өзгерістер әлі тіркелмеген.',
+      );
+  String get filterPrice => _pick('Price', 'Цена', 'Баға');
+  String get filterStock => _pick('Stock', 'Количество', 'Саны');
+  String get filterWeight => _pick('Weight', 'Вес', 'Салмақ');
+  String get filterOther => _pick('Other', 'Прочее', 'Басқа');
+  String changeSourceLabel(String source) {
+    switch (source) {
+      case 'create':
+        return _pick('New Item', 'Новый товар', 'Жаңа тауар');
+      case 'stock_in':
+        return _pick('Stock-In', 'Приход', 'Кіріс');
+      case 'stock_in_delete':
+        return _pick('Stock-In Deleted', 'Отмена прихода', 'Кірісті жою');
+      case 'stocktake':
+        return _pick('Stocktake', 'Ревизия', 'Түгендеу');
+      case 'sync':
+        return _pick('Sync / Import', 'Таблица / Импорт', 'Кесте / Импорт');
+      case 'archive':
+        return _pick('Archive', 'Архив', 'Мұрағат');
+      case 'trash':
+        return _pick('Trash', 'Корзина', 'Себет');
+      case 'restore':
+        return _pick('Restore', 'Восстановление', 'Қалпына келтіру');
+      case 'revert':
+        return _pick('Revert', 'Откат', 'Қайтару');
+      default:
+        return _pick('Edit', 'Редактирование', 'Өңдеу');
+    }
+  }
+  String get yesterdayLabel => _pick('Yesterday', 'Вчера', 'Кеше');
+  String get thisWeekLabel =>
+      _pick('This Week', 'На этой неделе', 'Осы аптада');
+  String get earlierLabel => _pick('Earlier', 'Ранее', 'Бұрын');
+  String get productUnavailableMsg => _pick(
+        'Product is no longer in the active catalog.',
+        'Товара уже нет в активном каталоге.',
+        'Тауар белсенді каталогта жоқ.',
+      );
+  String get allSourcesLabel =>
+      _pick('All Sources', 'Все источники', 'Барлық көздер');
+  String get revertAction => _pick('Revert', 'Откатить', 'Қайтару');
+  String get revertedMsg =>
+      _pick('Change reverted', 'Изменение откачено', 'Өзгеріс қайтарылды');
+  String get revertConfirmTitle => _pick(
+        'Revert change?',
+        'Откатить изменение?',
+        'Өзгерісті қайтару керек пе?',
+      );
+  String revertConfirmBody(String name) => _pick(
+        'Restore previous values for "$name"?',
+        'Вернуть прежние значения для «$name»?',
+        '«$name» тауарының бұрынғы мәндерін қайтару керек пе?',
+      );
+  String get statusFieldLabel => _pick('Status', 'Статус', 'Мәртебе');
+  String get statusActiveLabel => _pick('Active', 'Активен', 'Белсенді');
+  String get statusArchivedLabel =>
+      _pick('Archived', 'В архиве', 'Мұрағатта');
+  String get statusTrashedLabel =>
+      _pick('In Trash', 'В корзине', 'Себетте');
+  String get clearHistoryBtn => _pick(
+        'Clear History',
+        'Очистить историю',
+        'Тарихты тазалау',
+      );
+  String get clearHistoryTitle => _pick(
+        'Clear change history?',
+        'Очистить историю изменений?',
+        'Өзгерістер тарихын тазалау керек пе?',
+      );
+  String get clearOlder30DaysAction => _pick(
+        'Older than 30 days',
+        'Старше 30 дней',
+        '30 күннен ескілерін',
+      );
+  String get clearAllAction =>
+      _pick('Clear All', 'Очистить всё', 'Барлығын тазалау');
+  String clearedHistoryCountMsg(int count) => _pick(
+        'Removed $count entries',
+        'Удалено записей: $count',
+        'Жойылған жазбалар: $count',
+      );
+  String revertPreviewHeader(String source, String time) => _pick(
+        'Reverting: $source • $time',
+        'Откат правки: $source • $time',
+        'Қайтарылатын өзгеріс: $source • $time',
+      );
+  String get revertAlreadyMatchesMsg => _pick(
+        'Current values already match.',
+        'Текущие значения уже совпадают с прежними.',
+        'Ағымдағы мәндер бұрынғы мәндермен сәйкес келеді.',
+      );
+  String get accessSectionLabel => _pick('Access', 'Доступ', 'Қолжетімділік');
+  String get shopAndDataSectionLabel =>
+      _pick('Shop & Data', 'Магазин и данные', 'Дүкен және деректер');
+  String get pinIsSetStatus => _pick('Set', 'Задан', 'Орнатылған');
+  String get pinNotSetStatus =>
+      _pick('Not set', 'Не задан', 'Орнатылмаған');
+  String get connectedStatus =>
+      _pick('Connected', 'Подключена', 'Қосылған');
+  String get notConfiguredStatus =>
+      _pick('Not configured', 'Не настроена', 'Бапталмаған');
+  String get cashierModeActiveStatus => _pick(
+        'Active — restricted access',
+        'Включён — ограниченный доступ',
+        'Қосулы — шектеулі қолжетімділік',
+      );
+  String get ownerModeActiveStatus => _pick(
+        'Owner access unlocked',
+        'Полный доступ владельца',
+        'Иесінің толық қолжетімділігі',
+      );
+  String get downloadHistoryBtn => _pick(
+        'Download History',
+        'Скачать историю',
+        'Тарихты жүктеу',
+      );
+  String get downloadHistoryTitle => _pick(
+        'Download Change History',
+        'Скачать историю изменений',
+        'Өзгерістер тарихын жүктеу',
+      );
+  String get period30Days => _pick('30 Days', '30 дней', '30 күн');
+  String get period1Year => _pick('1 Year', '1 год', '1 жыл');
+  String get period2Years =>
+      _pick('2 Years (All)', '2 года (Всё)', '2 жыл (Барлығы)');
+  String get noChangesForPeriodMsg => _pick(
+        'No changes for selected period.',
+        'За выбранный период изменений нет.',
+        'Таңдалған кезеңде өзгерістер жоқ.',
+      );
+  String get customerPhoneRequiredForDebt => _pick(
+        'Customer Phone * (for post-payment)',
+        'Телефон клиента * (для постоплаты)',
+        'Клиент телефоны * (қарызға сату үшін)',
+      );
+  String get enterCustomerPhone => _pick(
+        'Enter debtor phone number',
+        'Укажите номер телефона должника',
+        'Борышкердің телефон нөмірін енгізіңіз',
+      );
+  String debtPurchasesCountLabel(int total, int active) => _pick(
+        'Debt purchases: $total ($active active)',
+        'Покупок в долг: $total (активных: $active)',
+        'Қарызға сатып алу: $total (белсенді: $active)',
+      );
+  String get debtRepaymentsHeader => _pick(
+        'Debt Repayments',
+        'История возвратов долга',
+        'Қарызды қайтару тарихы',
+      );
+  String get activeDebtorsFilter =>
+      _pick('Active', 'Активные', 'Белсенді');
+  String get allDebtCustomersFilter => _pick(
+        'All Debt History',
+        'Вся история долгов',
+        'Барлық қарыз тарихы',
+      );
+  String get debtPaidBadge => _pick('Settled', 'Погашен', 'Өтелді');
+  String get negativeStockReminderTitle => _pick(
+        'Restore Negative Stock',
+        'Восстановите минусовой товар',
+        'Минус қалдықты қалпына келтіріңіз',
+      );
+  String get negativeStockReminderBody => _pick(
+        'These products were sold out of stock. Restock or return them to clear the minus:',
+        'Эти товары были проданы без остатка (в минус). Оформите приход или поправьте остаток:',
+        'Бұл тауарлар қалдықсыз (минусқа) сатылды. Кіріс рәсімдеңіз немесе қалдықты түзетіңіз:',
+      );
+  String reminderCountOfFive(int shown, int total) => _pick(
+        'Reminder $shown of $total',
+        'Напоминание $shown из $total',
+        'Еске салу $shown / $total',
+      );
+  String get remindLaterBtn =>
+      _pick('Remind Later', 'Напомнить позже', 'Кейінірек еске салу');
+  String get restoreStockNowBtn => _pick(
+        'Close via Stock-In',
+        'Закрыть через Приход',
+        'Кіріс арқылы жабу',
+      );
+  String get allowNegativeStockLabel => _pick(
+        'Allow Negative Stock Sales',
+        'Разрешать продажу в минус',
+        'Минусқа сатуға рұқсат ету',
+      );
+  String get allowNegativeStockHint => _pick(
+        'Automatically disabled in Cashier Mode',
+        'Отключается в режиме продавца',
+        'Сатушы режимінде автоматты түрде өшеді',
+      );
+  String inMinusFilter(int count) =>
+      _pick('In Minus ($count)', 'В минусе ($count)', 'Минуста ($count)');
+  String get exportSectionsHeader => _pick(
+        'Export Sections to Separate Tabs',
+        'Выгрузка разделов в отдельные листы',
+        'Бөлімдерді бөлек парақтарға жүктеу',
+      );
+  String get sheetTabNameLabel =>
+      _pick('Sheet Tab Name', 'Название листа', 'Парақ атауы');
+  String get uploadToSheetBtn =>
+      _pick('Upload to Tab', 'В лист', 'Параққа');
+  String get uploadAllSectionsBtn => _pick(
+        'Upload All 7 Sections',
+        'Выгрузить все 7 разделов',
+        'Барлық 7 бөлімді жүктеу',
+      );
+  String get copyTsvShortBtn =>
+      _pick('Copy (A1)', 'Копировать (A1)', 'Көшіру (A1)');
+  String sectionUploadedMsg(String sheetName, int count) => _pick(
+        'Uploaded $count rows to "$sheetName"',
+        'Выгружено в лист «$sheetName»: $count строк',
+        '«$sheetName» парағына $count жол жүктелді',
+      );
+  String get allSectionsUploadedMsg => _pick(
+        'All sections uploaded to Google Sheets',
+        'Все разделы выгружены в Google Таблицу',
+        'Барлық бөлімдер Google Кестеге жүктелді',
+      );
+  String get syncAllCatalogAndSectionsBtn => _pick(
+        'Sync All (Catalog + 7 Tabs)',
+        'Выгрузить всё (Каталог + 7 разделов)',
+        'Барлығын жүктеу (Каталог + 7 бөлім)',
+      );
+  String get allCatalogAndSectionsSyncedMsg => _pick(
+        'Catalog and all 7 sections synced to Google Sheets',
+        'Каталог и все 7 разделов выгружены в Google Таблицу',
+        'Каталог пен барлық 7 бөлім Google Кестеге жүктелді',
+      );
+  String get sectionChanges => _pick('Change History', 'История изменений', 'Өзгерістер тарихы');
+  String get sectionSales => _pick('Sales', 'Продажи', 'Сатылымдар');
+  String get sectionStockIns => _pick('Stock-In', 'Приходы', 'Кірістер');
+  String get sectionCustomers => _pick('Customers', 'Клиенты', 'Клиенттер');
+  String get sectionDebts => _pick('Debts & Repayments', 'Долги', 'Қарыздар');
+  String get sectionExpenses => _pick('Expenses', 'Расходы', 'Шығындар');
+  String get sectionDefects => _pick('Defect Write-Offs', 'Брак', 'Ақау');
+  String get restoreAllFromSheetsBtn => _pick(
+        'Restore All from Google Sheets',
+        'Восстановить всё из Google Таблицы',
+        'Google Кестеден бәрін қалпына келтіру',
+      );
+  String get restoreAllConfirmTitle => _pick(
+        'Restore full backup?',
+        'Восстановить всю базу?',
+        'Барлық деректі қалпына келтіру керек пе?',
+      );
+  String restoreAllConfirmBody(String? updatedAt) => _pick(
+        'Replace current app data with the backup from Google Sheets${updatedAt != null && updatedAt.isNotEmpty ? ' ($updatedAt)' : ''}?',
+        'Заменить текущие данные на телефоне полной резервной копией из Google Таблицы${updatedAt != null && updatedAt.isNotEmpty ? ' ($updatedAt)' : ''}?',
+        'Телефондағы деректерді Google Кестедегі толық көшірмемен${updatedAt != null && updatedAt.isNotEmpty ? ' ($updatedAt)' : ''} алмастыру керек пе?',
+      );
+  String get noCloudBackupMsg => _pick(
+        'No full backup found in Google Sheets yet. Run "Sync All" first.',
+        'В Google Таблице ещё нет полного бэкапа. Сначала нажмите «Выгрузить всё».',
+        'Google Кестеде толық сақтық көшірме жоқ. Алдымен «Барлығын жүктеу» түймесін басыңыз.',
+      );
+  String get autoBackupLabel => _pick(
+        'Auto-Sync Changes to Sheets',
+        'Автосинхронизация в Google Таблицу',
+        'Google Кестеге автосинхрондау',
+      );
+  String get autoBackupHint => _pick(
+        'Automatically updates only changed tabs and _Backup to save traffic',
+        'Автоматически обновляет только изменённые листы и _Backup (экономит трафик)',
+        'Тек өзгерген парақтар мен _Backup-ты автоматты жаңартады (трафикті үнемдейді)',
+      );
+  String lastAutoBackupStatus(String time) => _pick(
+        'Last auto-backup: $time',
+        'Последний автобэкап: $time',
+        'Соңғы автобэкап: $time',
+      );
+  String get changePinTitle => _pick(
+        'Change Owner PIN',
+        'Изменить PIN-код владельца',
+        'Иесінің PIN-кодын өзгерту',
+      );
+  String get currentPinLabel => _pick(
+        'Current PIN',
+        'Текущий PIN-код',
+        'Қазіргі PIN-код',
+      );
+  String get newPinLabel => _pick(
+        'New PIN',
+        'Новый PIN-код',
+        'Жаңа PIN-код',
+      );
+  String get confirmPinLabel => _pick(
+        'Confirm PIN',
+        'Повторите PIN-код',
+        'PIN-кодты қайталаңыз',
+      );
+  String get pinsDoNotMatchMsg => _pick(
+        'PIN codes do not match',
+        'PIN-коды не совпадают',
+        'PIN-кодтар сәйкес келмейді',
+      );
+  String get removePinAction => _pick(
+        'Remove PIN',
+        'Удалить PIN',
+        'PIN-кодты жою',
+      );
+  String get pinRemovedMsg => _pick(
+        'PIN removed',
+        'PIN-код удалён',
+        'PIN-код жойылды',
+      );
+  String get biometricUnlockLabel => _pick(
+        'Fingerprint / Face / Device Lock',
+        'Отпечаток / Лицо / Пароль телефона',
+        'Саусақ ізі / Бет / Телефон құпия сөзі',
+      );
+  String get biometricUnlockHint => _pick(
+        'Unlock Owner Mode with fingerprint, face, pattern, or phone PIN',
+        'Вход в режим владельца по отпечатку, лицу, графическому ключу или паролю экрана',
+        'Иесі режиміне саусақ ізі, бет, өрнек немесе экран құпия сөзімен кіру',
+      );
+  String get biometricPromptReason => _pick(
+        'Verify your identity to unlock Owner Mode',
+        'Подтвердите личность для входа в режим владельца',
+        'Иесі режиміне кіру үшін жеке басыңызды растаңыз',
+      );
+  String get biometricUnavailableMsg => _pick(
+        'Set up a fingerprint, face unlock, or screen lock in phone Settings first',
+        'Сначала настройте отпечаток, лицо или блокировку экрана в настройках телефона',
+        'Алдымен телефон баптауларында саусақ ізін, бетті немесе экран құлпын қосыңыз',
+      );
+  String get biometricFailedMsg => _pick(
+        'Verification failed or cancelled',
+        'Проверка не пройдена или отменена',
+        'Тексеру өтпеді немесе тоқтатылды',
+      );
+  String get useBiometricBtn => _pick(
+        'Use Fingerprint / Device Lock',
+        'Отпечаток / пароль телефона',
+        'Саусақ ізі / телефон құпия сөзі',
+      );
 }

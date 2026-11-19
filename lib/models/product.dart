@@ -154,3 +154,85 @@ class Product {
     );
   }
 }
+
+class ProductChangeField {
+  const ProductChangeField({
+    this.key = '',
+    required this.kind,
+    required this.label,
+    required this.oldValue,
+    required this.newValue,
+  });
+
+  /// 'sellPrice' | 'costPrice' | 'stock' | 'unitWeight' | 'name' | 'category' | 'sku' | 'lowStockThreshold' | 'unit'
+  final String key;
+  /// 'price' | 'stock' | 'weight' | 'other'
+  final String kind;
+  final String label;
+  final String oldValue;
+  final String newValue;
+
+  Map<String, dynamic> toJson() => {
+        if (key.isNotEmpty) 'key': key,
+        'kind': kind,
+        'label': label,
+        'oldValue': oldValue,
+        'newValue': newValue,
+      };
+
+  factory ProductChangeField.fromJson(Map<String, dynamic> json) {
+    return ProductChangeField(
+      key: (json['key'] as String?) ?? '',
+      kind: (json['kind'] as String?) ?? 'other',
+      label: (json['label'] as String?) ?? '',
+      oldValue: (json['oldValue'] as String?) ?? '',
+      newValue: (json['newValue'] as String?) ?? '',
+    );
+  }
+}
+
+class ProductChangeEntry {
+  const ProductChangeEntry({
+    required this.id,
+    required this.productId,
+    required this.productName,
+    required this.source,
+    required this.fields,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String productId;
+  final String productName;
+  /// 'edit' | 'stock_in' | 'stocktake' | 'sync'
+  final String source;
+  final List<ProductChangeField> fields;
+  final DateTime createdAt;
+
+  bool hasKind(String kind) => fields.any((f) => f.kind == kind);
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'productId': productId,
+        'productName': productName,
+        'source': source,
+        'fields': fields.map((f) => f.toJson()).toList(),
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory ProductChangeEntry.fromJson(Map<String, dynamic> json) {
+    final rawFields = json['fields'] as List<dynamic>? ?? const [];
+    return ProductChangeEntry(
+      id: (json['id'] as String?) ?? '',
+      productId: (json['productId'] as String?) ?? '',
+      productName: (json['productName'] as String?) ?? '',
+      source: (json['source'] as String?) ?? 'edit',
+      fields: rawFields
+          .whereType<Map<String, dynamic>>()
+          .map(ProductChangeField.fromJson)
+          .toList(),
+      createdAt: DateTime.tryParse((json['createdAt'] as String?) ?? '') ??
+          DateTime.now(),
+    );
+  }
+}

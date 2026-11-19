@@ -14,7 +14,6 @@ import '../widgets/invoices_history_sheet.dart';
 import '../widgets/receipt_barcode.dart';
 import '../widgets/receipt_sheet.dart';
 import '../widgets/settings_button.dart';
-import 'archive_trash_screen.dart';
 import 'barcode_scanner_screen.dart';
 
 class SalesScreen extends StatefulWidget {
@@ -50,13 +49,6 @@ class _SalesScreenState extends State<SalesScreen> {
     }
   }
 
-  void _openArchiveTrash() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ArchiveTrashScreen(controller: widget.controller),
-      ),
-    );
-  }
 
   void _openDebtorsSheet() {
     showModalBottomSheet<void>(
@@ -199,13 +191,24 @@ class _SalesScreenState extends State<SalesScreen> {
         final unpaidCount = widget.controller.unpaidSales.length;
         final totalDebt = widget.controller.totalUnpaidDebt;
         final breakdown = widget.controller.paymentBreakdown(_filter);
-        final archivedOrTrashed =
-            widget.controller.archiveCount + widget.controller.trashCount;
 
         return Scaffold(
+          resizeToAvoidBottomInset: false,
           appBar: AppBar(
             title: Text(strings.salesAndProfit),
             actions: [
+              IconButton(
+                tooltip: strings.customersBtn,
+                onPressed: _openCustomersSheet,
+                icon: Badge(
+                  isLabelVisible: widget.controller.customers.isNotEmpty,
+                  backgroundColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                  textColor: Theme.of(context).colorScheme.onSurfaceVariant,
+                  label: Text('${widget.controller.customers.length}'),
+                  child: const Icon(Icons.contacts_outlined),
+                ),
+              ),
               SettingsButton(controller: widget.controller),
             ],
           ),
@@ -460,7 +463,12 @@ class _SalesScreenState extends State<SalesScreen> {
                         ),
                       )
                     : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          4,
+                          16,
+                          16 + MediaQuery.viewInsetsOf(context).bottom,
+                        ),
                         itemCount: sales.length,
                         separatorBuilder: (_, _) => const SizedBox(height: 8),
                         itemBuilder: (context, index) {
@@ -479,7 +487,10 @@ class _SalesScreenState extends State<SalesScreen> {
                             margin: EdgeInsets.zero,
                             child: ListTile(
                               onTap: () => _showSaleDetails(sale),
-                              title: Row(
+                              title: Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
                                   Text(
                                     formatMoney(sale.total, currency),
@@ -487,7 +498,6 @@ class _SalesScreenState extends State<SalesScreen> {
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                  const SizedBox(width: 8),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 8,
@@ -517,8 +527,7 @@ class _SalesScreenState extends State<SalesScreen> {
                                     ),
                                   ),
                                   if (sale.refundNote.isNotEmpty ||
-                                      sale.refundedAmount > 0) ...[
-                                    const SizedBox(width: 6),
+                                      sale.refundedAmount > 0)
                                     Container(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 8,
@@ -543,7 +552,6 @@ class _SalesScreenState extends State<SalesScreen> {
                                             ),
                                       ),
                                     ),
-                                  ],
                                 ],
                               ),
                               subtitle: Text(subtitleParts.join(' • ')),
@@ -704,17 +712,21 @@ class _SaleDetailSheet extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       strings.receiptNumberLabel(sale.receiptCode),
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
-                    Text(
-                      sale.isSplitPayment
-                          ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} (${formatMoney(sale.primaryPaymentAmount, currency)}) + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)} (${formatMoney(sale.secondaryAmount, currency)})'
-                          : strings.paymentMethodLabel(sale.paymentMethod.name),
-                      style: Theme.of(context).textTheme.labelLarge,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        sale.isSplitPayment
+                            ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} (${formatMoney(sale.primaryPaymentAmount, currency)}) + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)} (${formatMoney(sale.secondaryAmount, currency)})'
+                            : strings.paymentMethodLabel(sale.paymentMethod.name),
+                        style: Theme.of(context).textTheme.labelLarge,
+                        textAlign: TextAlign.end,
+                      ),
                     ),
                   ],
                 ),
@@ -726,6 +738,11 @@ class _SaleDetailSheet extends StatelessWidget {
                 if (sale.customerName.isNotEmpty)
                   Text(
                     strings.customerLabel(sale.customerName),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                if (sale.customerPhone.isNotEmpty)
+                  Text(
+                    '${strings.shopPhoneLabel}: ${sale.customerPhone}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 if (sale.dueDate != null)
@@ -815,6 +832,36 @@ class _SaleDetailSheet extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if (sale.paymentHistory.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      strings.debtRepaymentsHeader,
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    for (final p in sale.paymentHistory)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              formatDateTime(p.paidAt),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            Text(
+                              '+${formatMoney(p.amount, currency)}',
+                              style: TextStyle(
+                                color: Colors.green.shade700,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                 ],
                 const SizedBox(height: 12),
                 ReceiptBarcodeWidget(code: sale.receiptCode),
@@ -956,18 +1003,20 @@ class _PartialPaymentDialogState extends State<_PartialPaymentDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: TextField(
-        controller: _amountController,
-        autofocus: true,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          labelText: widget.hintLabel,
-          border: const OutlineInputBorder(),
+      content: SingleChildScrollView(
+        child: TextField(
+          controller: _amountController,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            labelText: widget.hintLabel,
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (value) {
+            final parsed = double.tryParse(value.trim());
+            Navigator.of(context).pop(parsed);
+          },
         ),
-        onSubmitted: (value) {
-          final parsed = double.tryParse(value.trim());
-          Navigator.of(context).pop(parsed);
-        },
       ),
       actions: [
         TextButton(
@@ -1393,11 +1442,12 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
               ),
               const SizedBox(height: 10),
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    strings.itemsToReturnLabel,
-                    style: Theme.of(context).textTheme.labelLarge,
+                  Expanded(
+                    child: Text(
+                      strings.itemsToReturnLabel,
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
                   ),
                   TextButton(
                     onPressed: () {
@@ -1546,6 +1596,7 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
                         IconButton(
                           tooltip: strings.scanBarcodeTitle,
                           onPressed: () async {
+                            final messenger = ScaffoldMessenger.of(context);
                             final scanned = await Navigator.of(context).push<String>(
                               MaterialPageRoute<String>(
                                 builder: (_) => BarcodeScannerScreen(strings: strings),
@@ -1560,20 +1611,20 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
                                 _productSearchCtrl.text = scanned.trim();
                                 _productQuery = scanned.trim();
                               });
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              messenger.showSnackBar(
                                 SnackBar(content: Text(strings.skuNotFoundMsg(scanned.trim()))),
                               );
                               return;
                             }
                             if (product.stock <= 0) {
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              messenger.showSnackBar(
                                 SnackBar(content: Text(strings.outOfStockMsg(product.name))),
                               );
                               return;
                             }
                             final currentQty = _exchangeQty[product.id] ?? 0;
                             if (currentQty >= product.stock) {
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              messenger.showSnackBar(
                                 SnackBar(content: Text(strings.onlyLeftMsg(product.stock))),
                               );
                               return;
