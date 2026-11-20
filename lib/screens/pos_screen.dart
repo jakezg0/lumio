@@ -807,6 +807,8 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _discountController =
       TextEditingController(text: '0');
+  final TextEditingController _discountPercentController =
+      TextEditingController();
   final TextEditingController _paidNowController =
       TextEditingController(text: '0');
   final TextEditingController _cashReceivedController = TextEditingController();
@@ -817,12 +819,15 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
   DateTime? _dueDate;
   String? _customerError;
   String? _phoneError;
+  bool _discountDrivenByPercent = false;
+  double _lastSubtotal = -1;
 
   @override
   void dispose() {
     _customerController.dispose();
     _phoneController.dispose();
     _discountController.dispose();
+    _discountPercentController.dispose();
     _paidNowController.dispose();
     _cashReceivedController.dispose();
     _primarySplitController.dispose();
@@ -830,8 +835,69 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
   }
 
   double get _discount {
-    final parsed = double.tryParse(_discountController.text.trim()) ?? 0;
+    final raw = _discountController.text.trim().replaceAll(',', '.');
+    final parsed = double.tryParse(raw) ?? 0;
     return parsed < 0 ? 0 : parsed;
+  }
+
+  double get _discountPercent {
+    final raw = _discountPercentController.text.trim().replaceAll(',', '.');
+    final parsed = double.tryParse(raw) ?? 0;
+    return parsed.clamp(0.0, 100.0);
+  }
+
+  String _formatPercent(double pct) {
+    if (pct <= 0.009) return '';
+    if ((pct - pct.roundToDouble()).abs() < 0.05) {
+      return pct.round().toString();
+    }
+    return pct.toStringAsFixed(1);
+  }
+
+  void _onDiscountAmountChanged(double subtotal) {
+    _discountDrivenByPercent = false;
+    if (subtotal > 0 && _discount > 0) {
+      final pct = (_discount / subtotal * 100).clamp(0.0, 100.0);
+      _discountPercentController.text = _formatPercent(pct);
+    } else {
+      _discountPercentController.clear();
+    }
+    setState(() {});
+  }
+
+  void _onDiscountPercentChanged(double subtotal) {
+    final raw = _discountPercentController.text.trim().replaceAll(',', '.');
+    if (raw.isEmpty) {
+      _discountDrivenByPercent = false;
+      _discountController.text = '0';
+      setState(() {});
+      return;
+    }
+    final parsed = double.tryParse(raw);
+    if (parsed == null) {
+      setState(() {});
+      return;
+    }
+    final clamped = parsed.clamp(0.0, 100.0);
+    _discountDrivenByPercent = clamped > 0;
+    final disc = (subtotal * clamped / 100).roundToDouble();
+    _discountController.text = disc > 0 ? disc.toStringAsFixed(0) : '0';
+    setState(() {});
+  }
+
+  void _applyPresetPercent(int pct, double subtotal) {
+    _discountDrivenByPercent = true;
+    _discountPercentController.text = '$pct';
+    final disc = (subtotal * pct / 100).roundToDouble();
+    _discountController.text = disc.toStringAsFixed(0);
+    setState(() {});
+  }
+
+  void _clearDiscount() {
+    _discountDrivenByPercent = false;
+    _discountController.text = '0';
+    _discountPercentController.clear();
+    setState(() {});
   }
 
   double get _paidNow {
@@ -879,6 +945,77 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
       _phoneController.text = knownPhone;
       _phoneError = null;
     }
+  }
+
+  Future<void> _editCustomerRecommendation(String name) async {
+    final strings = widget.controller.strings;
+    final existingPhone = widget.controller.customerPhoneByName(name);
+    final result = await showDialog<({String name, String phone})>(
+      context: context,
+      builder: (_) => _EditCustomerRecommendationDialog(
+        strings: strings,
+        initialName: name,
+        initialPhone: existingPhone,
+      ),
+    );
+    if (result == null || !mounted) return;
+    final newName = result.name.trim();
+    if (newName.isEmpty) return;
+    final wasSelected =
+        _customerController.text.trim().toLowerCase() == name.toLowerCase();
+    await widget.controller.renameCustomerRecommendation(
+      oldName: name,
+      newName: newName,
+      phone: result.phone,
+    );
+    if (!mounted) return;
+    if (wasSelected) {
+      setState(() {
+        _customerController.text = newName;
+        _customerError = null;
+        if (result.phone.trim().isNotEmpty) {
+          _phoneController.text = result.phone.trim();
+          _phoneError = null;
+        }
+      });
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(strings.customerUpdatedMsg)),
+    );
+  }
+
+  Future<void> _deleteCustomerRecommendation(String name) async {
+    final strings = widget.controller.strings;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(strings.deleteCustomerRecommendationTitle),
+        content: Text(strings.deleteCustomerRecommendationBody(name)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(strings.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final wasSelected =
+        _customerController.text.trim().toLowerCase() == name.toLowerCase();
+    await widget.controller.deleteCustomerRecommendation(name);
+    if (!mounted) return;
+    if (wasSelected) {
+      setState(() {
+        _customerController.clear();
+      });
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(strings.customerRemovedMsg)),
+    );
   }
 
   Future<void> _completeSale() async {
@@ -936,6 +1073,14 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
         final currency = widget.controller.currency;
         final lines = widget.controller.cartLines;
         final subtotal = widget.controller.cartSubtotal;
+        if (_discountDrivenByPercent &&
+            _lastSubtotal >= 0 &&
+            (subtotal - _lastSubtotal).abs() > 0.009) {
+          final recalculated = (subtotal * _discountPercent / 100).roundToDouble();
+          _discountController.text =
+              recalculated > 0 ? recalculated.toStringAsFixed(0) : '0';
+        }
+        _lastSubtotal = subtotal;
         final total = (subtotal - _discount).clamp(0.0, double.infinity);
         final isPostPay = _paymentMethod == PaymentMethod.postPay;
         final customerNames = widget.controller.recentCustomerNames;
@@ -1234,26 +1379,118 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                       scrollDirection: Axis.horizontal,
                       children: [
                         for (final name in matchingCustomers)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: ChoiceChip(
-                              visualDensity: VisualDensity.compact,
-                              label: Text(name),
-                              selected: _customerController.text
+                          Builder(
+                            builder: (context) {
+                              final isSelected = _customerController.text
                                       .trim()
                                       .toLowerCase() ==
-                                  name.toLowerCase(),
-                              onSelected: (selected) {
-                                setState(() {
-                                  _customerController.text =
-                                      selected ? name : '';
-                                  _customerError = null;
-                                  if (selected) {
-                                    _syncPhoneForCustomer(name);
-                                  }
-                                });
-                              },
-                            ),
+                                  name.toLowerCase();
+                              final scheme = Theme.of(context).colorScheme;
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: Material(
+                                  color: isSelected
+                                      ? scheme.secondaryContainer
+                                      : scheme.surfaceContainerLow,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    side: BorderSide(
+                                      color: isSelected
+                                          ? scheme.secondary
+                                          : scheme.outlineVariant,
+                                    ),
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      InkWell(
+                                        onTap: () {
+                                          setState(() {
+                                            _customerController.text =
+                                                isSelected ? '' : name;
+                                            _customerError = null;
+                                            if (!isSelected) {
+                                              _syncPhoneForCustomer(name);
+                                            }
+                                          });
+                                        },
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            10,
+                                            6,
+                                            4,
+                                            6,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              if (isSelected) ...[
+                                                Icon(
+                                                  Icons.check,
+                                                  size: 15,
+                                                  color: scheme
+                                                      .onSecondaryContainer,
+                                                ),
+                                                const SizedBox(width: 4),
+                                              ],
+                                              Text(
+                                                name,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .labelLarge
+                                                    ?.copyWith(
+                                                      color: isSelected
+                                                          ? scheme
+                                                              .onSecondaryContainer
+                                                          : scheme.onSurface,
+                                                    ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      InkWell(
+                                        onTap: () =>
+                                            _editCustomerRecommendation(name),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 5,
+                                            vertical: 6,
+                                          ),
+                                          child: Icon(
+                                            Icons.edit_outlined,
+                                            size: 15,
+                                            color: isSelected
+                                                ? scheme.onSecondaryContainer
+                                                : scheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ),
+                                      InkWell(
+                                        onTap: () =>
+                                            _deleteCustomerRecommendation(name),
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            4,
+                                            6,
+                                            8,
+                                            6,
+                                          ),
+                                          child: Icon(
+                                            Icons.close,
+                                            size: 15,
+                                            color: isSelected
+                                                ? scheme.onSecondaryContainer
+                                                : scheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
                           ),
                       ],
                     ),
@@ -1299,26 +1536,55 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                   ),
                 ],
                 const SizedBox(height: 10),
-                TextField(
-                  controller: _discountController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    labelText: strings.discountAmount,
-                    suffixIcon: _discount > 0
-                        ? IconButton(
-                            onPressed: () {
-                              _discountController.text = '0';
-                              setState(() {});
-                            },
-                            icon: const Icon(Icons.clear),
-                          )
-                        : null,
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                  ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: TextField(
+                        controller: _discountController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        onChanged: (_) => _onDiscountAmountChanged(subtotal),
+                        decoration: InputDecoration(
+                          labelText: strings.discountAmount,
+                          suffixIcon: _discount > 0
+                              ? IconButton(
+                                  onPressed: _clearDiscount,
+                                  icon: const Icon(Icons.clear, size: 18),
+                                )
+                              : null,
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 2,
+                      child: TextField(
+                        controller: _discountPercentController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        onChanged: (_) => _onDiscountPercentChanged(subtotal),
+                        decoration: InputDecoration(
+                          labelText: strings.discountPercentLabel,
+                          suffixText: '%',
+                          suffixIcon:
+                              _discountPercentController.text.trim().isNotEmpty
+                                  ? IconButton(
+                                      onPressed: _clearDiscount,
+                                      icon: const Icon(Icons.clear, size: 18),
+                                    )
+                                  : null,
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 if (subtotal > 0) ...[
                   const SizedBox(height: 6),
@@ -1336,13 +1602,8 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                             ActionChip(
                               visualDensity: VisualDensity.compact,
                               label: Text('-$pct%'),
-                              onPressed: () {
-                                final disc = (subtotal * pct / 100)
-                                    .roundToDouble();
-                                _discountController.text =
-                                    disc.toStringAsFixed(0);
-                                setState(() {});
-                              },
+                              onPressed: () =>
+                                  _applyPresetPercent(pct, subtotal),
                             ),
                           if (canRound)
                             ActionChip(
@@ -1359,8 +1620,14 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                               onPressed: () {
                                 final disc = (subtotal - roundedDown)
                                     .clamp(0.0, subtotal);
+                                _discountDrivenByPercent = false;
                                 _discountController.text =
                                     disc.toStringAsFixed(0);
+                                final pct = subtotal > 0
+                                    ? (disc / subtotal * 100).clamp(0.0, 100.0)
+                                    : 0.0;
+                                _discountPercentController.text =
+                                    _formatPercent(pct);
                                 setState(() {});
                               },
                             ),
@@ -2237,6 +2504,106 @@ class _AddProductToCheckoutSheetState extends State<_AddProductToCheckoutSheet> 
           ),
         );
       },
+    );
+  }
+}
+
+class _EditCustomerRecommendationDialog extends StatefulWidget {
+  const _EditCustomerRecommendationDialog({
+    required this.strings,
+    required this.initialName,
+    required this.initialPhone,
+  });
+
+  final AppStrings strings;
+  final String initialName;
+  final String initialPhone;
+
+  @override
+  State<_EditCustomerRecommendationDialog> createState() =>
+      _EditCustomerRecommendationDialogState();
+}
+
+class _EditCustomerRecommendationDialogState
+    extends State<_EditCustomerRecommendationDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  late final TextEditingController _phoneController;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.initialName);
+    _phoneController = TextEditingController(text: widget.initialPhone);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    Navigator.of(context).pop((
+      name: _nameController.text.trim(),
+      phone: _phoneController.text.trim(),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = widget.strings;
+    return AlertDialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      title: Text(strings.editCustomerTitle),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                autofocus: true,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: strings.customerNameOptional,
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? strings.enterCustomerName
+                    : null,
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _submit(),
+                decoration: InputDecoration(
+                  labelText: strings.shopPhoneLabel,
+                  prefixIcon: const Icon(Icons.phone_outlined, size: 18),
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(strings.cancel),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: Text(strings.saveChanges),
+        ),
+      ],
     );
   }
 }

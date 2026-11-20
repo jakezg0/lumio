@@ -1461,4 +1461,21 @@ class AppStrings {
         'Отпечаток / пароль телефона',
         'Саусақ ізі / телефон құпия сөзі',
       );
+  String get discountPercentLabel =>
+      _pick('Discount %', 'Скидка %', 'Жеңілдік %');
+  String get deleteCustomerRecommendationTitle => _pick(
+        'Remove from suggestions?',
+        'Удалить из рекомендаций?',
+        'Ұсыныстардан жою керек пе?',
+      );
+  String deleteCustomerRecommendationBody(String name) => _pick(
+        'Remove "$name" from customer suggestions and list? Past sales history will be kept.',
+        'Удалить «$name» из рекомендаций и списка клиентов? История продаж сохранится.',
+        '«$name» клиентін ұсыныстар мен тізімнен жою керек пе? Сатылым тарихы сақталады.',
+      );
+  String get customerRemovedMsg => _pick(
+        'Customer removed',
+        'Клиент удалён',
+        'Клиент жойылды',
+      );
 }

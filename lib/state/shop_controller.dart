@@ -190,6 +190,7 @@ class ShopController extends ChangeNotifier {
   String _googleSheetsUrl = '';
   String _googleSheetsSecret = '';
   final List<String> _customCategories = [];
+  final Set<String> _hiddenCustomerSuggestions = {};
   StockInDraft? _stockInDraft;
   StocktakeDraft? _stocktakeDraft;
   final List<HeldSale> _heldSales = [];
@@ -246,15 +247,20 @@ class ShopController extends ChangeNotifier {
     final result = <String>[];
     for (final c in _customers) {
       final name = c.name.trim();
-      if (name.isNotEmpty && seen.add(name.toLowerCase())) {
+      final lower = name.toLowerCase();
+      if (name.isNotEmpty &&
+          !_hiddenCustomerSuggestions.contains(lower) &&
+          seen.add(lower)) {
         result.add(name);
       }
     }
     for (final s in sales) {
       final name = s.customerName.trim();
+      final lower = name.toLowerCase();
       if (name.isNotEmpty &&
-          name.toLowerCase() != 'unknown' &&
-          seen.add(name.toLowerCase())) {
+          lower != 'unknown' &&
+          !_hiddenCustomerSuggestions.contains(lower) &&
+          seen.add(lower)) {
         result.add(name);
         if (result.length >= 15) break;
       }
@@ -363,6 +369,13 @@ class ShopController extends ChangeNotifier {
             .map((c) => c.trim())
             .where((c) => c.isNotEmpty),
       );
+    _hiddenCustomerSuggestions
+      ..clear()
+      ..addAll(
+        snapshot.hiddenCustomerSuggestions
+            .map((c) => c.trim().toLowerCase())
+            .where((c) => c.isNotEmpty),
+      );
     _stockInDraft = snapshot.stockInDraft;
     _stocktakeDraft = snapshot.stocktakeDraft;
     _heldSales
@@ -402,6 +415,7 @@ class ShopController extends ChangeNotifier {
       googleSheetsUrl: _googleSheetsUrl,
       googleSheetsSecret: _googleSheetsSecret,
       customCategories: List.unmodifiable(_customCategories),
+      hiddenCustomerSuggestions: List.unmodifiable(_hiddenCustomerSuggestions),
       stockInDraft: _stockInDraft,
       stocktakeDraft: _stocktakeDraft,
       heldSales: List.unmodifiable(_heldSales),
@@ -1475,6 +1489,15 @@ class ShopController extends ChangeNotifier {
     }
   }
 
+  Customer? findCustomerByName(String name) {
+    final target = name.trim().toLowerCase();
+    if (target.isEmpty) return null;
+    for (final c in _customers) {
+      if (c.name.trim().toLowerCase() == target) return c;
+    }
+    return null;
+  }
+
   Future<void> addCustomer({
     required String name,
     String phone = '',
@@ -1482,6 +1505,7 @@ class ShopController extends ChangeNotifier {
   }) async {
     final cleanName = name.trim();
     if (cleanName.isEmpty) return;
+    _hiddenCustomerSuggestions.remove(cleanName.toLowerCase());
     final customer = Customer(
       id: _nextId('cus'),
       name: cleanName,
@@ -1505,6 +1529,7 @@ class ShopController extends ChangeNotifier {
     if (cleanName.isEmpty) return;
     final index = _customers.indexWhere((c) => c.id == customerId);
     if (index == -1) return;
+    _hiddenCustomerSuggestions.remove(cleanName.toLowerCase());
     _customers[index] = _customers[index].copyWith(
       name: cleanName,
       phone: phone.trim(),
@@ -1516,7 +1541,101 @@ class ShopController extends ChangeNotifier {
   }
 
   Future<void> deleteCustomer(String customerId) async {
-    _customers.removeWhere((c) => c.id == customerId);
+    final idx = _customers.indexWhere((c) => c.id == customerId);
+    if (idx != -1) {
+      final removedName = _customers[idx].name.trim().toLowerCase();
+      if (removedName.isNotEmpty) {
+        _hiddenCustomerSuggestions.add(removedName);
+      }
+      _customers.removeAt(idx);
+    }
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> renameCustomerRecommendation({
+    required String oldName,
+    required String newName,
+    String? phone,
+  }) async {
+    final cleanOld = oldName.trim();
+    final cleanNew = newName.trim();
+    if (cleanOld.isEmpty || cleanNew.isEmpty) return;
+    final oldLower = cleanOld.toLowerCase();
+    final newLower = cleanNew.toLowerCase();
+    final cleanPhone = phone?.trim();
+
+    _hiddenCustomerSuggestions.remove(newLower);
+    if (oldLower != newLower) {
+      _hiddenCustomerSuggestions.remove(oldLower);
+    }
+
+    final oldIdx = _customers.indexWhere(
+      (c) => c.name.trim().toLowerCase() == oldLower,
+    );
+    final existingNewIdx = _customers.indexWhere(
+      (c) => c.name.trim().toLowerCase() == newLower,
+    );
+
+    if (oldIdx != -1) {
+      if (existingNewIdx != -1 && existingNewIdx != oldIdx) {
+        final mergedPhone = (cleanPhone != null && cleanPhone.isNotEmpty)
+            ? cleanPhone
+            : (_customers[existingNewIdx].phone.isNotEmpty
+                ? _customers[existingNewIdx].phone
+                : _customers[oldIdx].phone);
+        _customers[existingNewIdx] = _customers[existingNewIdx].copyWith(
+          name: cleanNew,
+          phone: mergedPhone,
+        );
+        _customers.removeAt(oldIdx);
+      } else {
+        _customers[oldIdx] = _customers[oldIdx].copyWith(
+          name: cleanNew,
+          phone: cleanPhone ?? _customers[oldIdx].phone,
+        );
+      }
+    } else if (existingNewIdx != -1) {
+      _customers[existingNewIdx] = _customers[existingNewIdx].copyWith(
+        name: cleanNew,
+        phone: (cleanPhone != null && cleanPhone.isNotEmpty)
+            ? cleanPhone
+            : _customers[existingNewIdx].phone,
+      );
+    } else {
+      _customers.add(
+        Customer(
+          id: _nextId('cus'),
+          name: cleanNew,
+          phone: cleanPhone ?? customerPhoneByName(cleanOld),
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    _customers.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    for (var i = 0; i < _sales.length; i++) {
+      final s = _sales[i];
+      if (s.customerName.trim().toLowerCase() == oldLower) {
+        _sales[i] = s.copyWith(
+          customerName: cleanNew,
+          customerPhone: (cleanPhone != null && cleanPhone.isNotEmpty)
+              ? cleanPhone
+              : s.customerPhone,
+        );
+      }
+    }
+
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> deleteCustomerRecommendation(String name) async {
+    final clean = name.trim();
+    if (clean.isEmpty) return;
+    final targetLower = clean.toLowerCase();
+    _customers.removeWhere((c) => c.name.trim().toLowerCase() == targetLower);
+    _hiddenCustomerSuggestions.add(targetLower);
     notifyListeners();
     await _persist();
   }
@@ -2539,6 +2658,7 @@ class ShopController extends ChangeNotifier {
     );
 
     if (cleanCustomerName.isNotEmpty) {
+      _hiddenCustomerSuggestions.remove(cleanCustomerName.toLowerCase());
       final existingIdx = _customers.indexWhere(
         (c) => c.name.trim().toLowerCase() == cleanCustomerName.toLowerCase(),
       );

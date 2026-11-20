@@ -546,6 +546,7 @@ function doPost(e) {
       'googleSheetsUrl': snapshot.googleSheetsUrl,
       'googleSheetsSecret': snapshot.googleSheetsSecret,
       'customCategories': snapshot.customCategories,
+      'hiddenCustomerSuggestions': snapshot.hiddenCustomerSuggestions,
       'stockInDraft': snapshot.stockInDraft?.toJson(),
       'stocktakeDraft': snapshot.stocktakeDraft?.toJson(),
       'heldSales': snapshot.heldSales.map((h) => h.toJson()).toList(),
@@ -635,6 +636,8 @@ function doPost(e) {
     }
 
     final rawCustomCats = meta['customCategories'] as List<dynamic>? ?? const [];
+    final rawHiddenCustomers =
+        meta['hiddenCustomerSuggestions'] as List<dynamic>? ?? const [];
     final rawHeldSales = meta['heldSales'] as List<dynamic>? ?? const [];
     final rawReminders =
         meta['negativeStockReminders'] as Map<String, dynamic>? ?? const {};
@@ -659,6 +662,7 @@ function doPost(e) {
       googleSheetsUrl: (meta['googleSheetsUrl'] as String?) ?? '',
       googleSheetsSecret: (meta['googleSheetsSecret'] as String?) ?? '',
       customCategories: rawCustomCats.map((e) => '$e').toList(),
+      hiddenCustomerSuggestions: rawHiddenCustomers.map((e) => '$e').toList(),
       stockInDraft: meta['stockInDraft'] is Map<String, dynamic>
           ? StockInDraft.fromJson(meta['stockInDraft'] as Map<String, dynamic>)
           : null,

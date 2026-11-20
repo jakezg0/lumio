@@ -29,6 +29,7 @@ class ShopDataSnapshot {
     this.googleSheetsUrl = '',
     this.googleSheetsSecret = '',
     this.customCategories = const [],
+    this.hiddenCustomerSuggestions = const [],
     this.stockInDraft,
     this.stocktakeDraft,
     this.heldSales = const [],
@@ -58,6 +59,7 @@ class ShopDataSnapshot {
   final String googleSheetsUrl;
   final String googleSheetsSecret;
   final List<String> customCategories;
+  final List<String> hiddenCustomerSuggestions;
   final StockInDraft? stockInDraft;
   final StocktakeDraft? stocktakeDraft;
   final List<HeldSale> heldSales;
@@ -210,6 +212,8 @@ ShopDataSnapshot _decodeSnapshotFromRawJson(String raw) {
   final rawStockIns = decoded['stockIns'] as List<dynamic>? ?? const [];
   final rawCustomCats =
       decoded['customCategories'] as List<dynamic>? ?? const [];
+  final rawHiddenCustomers =
+      decoded['hiddenCustomerSuggestions'] as List<dynamic>? ?? const [];
   final rawHeldSales = decoded['heldSales'] as List<dynamic>? ?? const [];
   final hasAnyData = rawProducts.isNotEmpty ||
       rawSales.isNotEmpty ||
@@ -245,6 +249,7 @@ ShopDataSnapshot _decodeSnapshotFromRawJson(String raw) {
     googleSheetsUrl: (decoded['googleSheetsUrl'] as String?) ?? '',
     googleSheetsSecret: (decoded['googleSheetsSecret'] as String?) ?? '',
     customCategories: rawCustomCats.map((e) => '$e').toList(),
+    hiddenCustomerSuggestions: rawHiddenCustomers.map((e) => '$e').toList(),
     stockInDraft: decoded['stockInDraft'] is Map<String, dynamic>
         ? StockInDraft.fromJson(
             decoded['stockInDraft'] as Map<String, dynamic>,
@@ -298,6 +303,8 @@ String _encodeSnapshotToJson(ShopDataSnapshot snapshot) {
     if (snapshot.googleSheetsSecret.isNotEmpty)
       'googleSheetsSecret': snapshot.googleSheetsSecret,
     'customCategories': snapshot.customCategories,
+    if (snapshot.hiddenCustomerSuggestions.isNotEmpty)
+      'hiddenCustomerSuggestions': snapshot.hiddenCustomerSuggestions,
     if (snapshot.stockInDraft != null)
       'stockInDraft': snapshot.stockInDraft!.toJson(),
     if (snapshot.stocktakeDraft != null)
