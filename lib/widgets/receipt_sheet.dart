@@ -107,11 +107,15 @@ class ReceiptSheet extends StatelessWidget {
                   strings.receiptNumberLabel(sale.receiptCode),
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                Text(
-                  sale.isSplitPayment
-                      ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)}'
-                      : strings.paymentMethodLabel(sale.paymentMethod.name),
-                  style: Theme.of(context).textTheme.labelLarge,
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    sale.isSplitPayment
+                        ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)}'
+                        : strings.paymentMethodLabel(sale.paymentMethod.name),
+                    style: Theme.of(context).textTheme.labelLarge,
+                    textAlign: TextAlign.end,
+                  ),
                 ),
               ],
             ),
@@ -182,10 +186,13 @@ class ReceiptSheet extends StatelessWidget {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        strings.returnedAmountSummaryLabel,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      Expanded(
+                        child: Text(
+                          strings.returnedAmountSummaryLabel,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
                         formatMoney(sale.returnedMoneyTotal, currency),
                         style: TextStyle(
@@ -201,10 +208,13 @@ class ReceiptSheet extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  sale.hasReturn ? strings.updatedSaleTotalLabel : strings.totalDue,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                Expanded(
+                  child: Text(
+                    sale.hasReturn ? strings.updatedSaleTotalLabel : strings.totalDue,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
+                const SizedBox(width: 8),
                 Text(
                   formatMoney(sale.total, currency),
                   style: const TextStyle(fontWeight: FontWeight.bold),
@@ -265,7 +275,11 @@ class ReceiptSheet extends StatelessWidget {
                   child: FilledButton.tonalIcon(
                     onPressed: () => _sharePdf(context),
                     icon: const Icon(Icons.picture_as_pdf_outlined),
-                    label: Text(strings.sharePdfBtn),
+                    label: Text(
+                      strings.sharePdfBtn,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -273,7 +287,11 @@ class ReceiptSheet extends StatelessWidget {
                   child: OutlinedButton.icon(
                     onPressed: () => _copyText(context),
                     icon: const Icon(Icons.copy),
-                    label: Text(strings.copyTextBtn),
+                    label: Text(
+                      strings.copyTextBtn,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
               ],

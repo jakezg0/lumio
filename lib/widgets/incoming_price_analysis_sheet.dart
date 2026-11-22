@@ -111,11 +111,17 @@ class _IncomingPriceAnalysisSheetState
               ),
               const SizedBox(height: 10),
               SegmentedButton<SalesDateFilter>(
+                showSelectedIcon: false,
                 segments: [
                   for (final option in SalesDateFilter.values)
                     ButtonSegment(
                       value: option,
-                      label: Text(_filterLabel(strings, option)),
+                      label: Text(
+                        _filterLabel(strings, option),
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                 ],
                 selected: {_dateFilter},
@@ -264,17 +270,21 @@ class _IncomingPriceAnalysisSheetState
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(
-                                    '${strings.minMaxCostLabel}: ${formatMoney(item.minCost, currency)} / ${formatMoney(item.maxCost, currency)}',
-                                    style:
-                                        Theme.of(context).textTheme.bodySmall,
+                                  Expanded(
+                                    child: Text(
+                                      '${strings.minMaxCostLabel}: ${formatMoney(item.minCost, currency)} / ${formatMoney(item.maxCost, currency)}',
+                                      style:
+                                          Theme.of(context).textTheme.bodySmall,
+                                    ),
                                   ),
-                                  if (item.currentSellPrice != null)
+                                  if (item.currentSellPrice != null) ...[
+                                    const SizedBox(width: 8),
                                     Text(
                                       '${strings.sellShort}: ${formatMoney(item.currentSellPrice!, currency)}',
                                       style:
                                           Theme.of(context).textTheme.bodySmall,
                                     ),
+                                  ],
                                 ],
                               ),
                             ),
@@ -289,7 +299,8 @@ class _IncomingPriceAnalysisSheetState
                                     Expanded(
                                       child: Text(
                                         '${formatDateTime(entry.createdAt)}'
-                                        '${entry.supplierName.isNotEmpty ? ' • ${entry.supplierName}' : ''}',
+                                        '${entry.supplierName.isNotEmpty ? ' • ${entry.supplierName}' : ''}'
+                                        '${entry.exchangeRateLabel.isNotEmpty ? ' • ${entry.exchangeRateLabel}' : ''}',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall,

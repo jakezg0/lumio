@@ -1249,8 +1249,19 @@ class AppStrings {
       );
   String get period30Days => _pick('30 Days', '30 дней', '30 күн');
   String get period1Year => _pick('1 Year', '1 год', '1 жыл');
-  String get period2Years =>
-      _pick('2 Years (All)', '2 года (Всё)', '2 жыл (Барлығы)');
+  String get period2Years => _pick('2 Years', '2 года', '2 жыл');
+  String get period5Years =>
+      _pick('5 Years (All)', '5 лет (Всё)', '5 жыл (Барлығы)');
+  String get priceHistory5YearsHeader => _pick(
+        'Price History (5 Years)',
+        'История цен (за 5 лет)',
+        'Баға тарихы (5 жыл)',
+      );
+  String get stockInRateHint => _pick(
+        'Rate on date (optional)',
+        'Курс на дату (необяз.)',
+        'Кіріс күніндегі бағам',
+      );
   String get noChangesForPeriodMsg => _pick(
         'No changes for selected period.',
         'За выбранный период изменений нет.',
@@ -1328,9 +1339,9 @@ class AppStrings {
   String get uploadToSheetBtn =>
       _pick('Upload to Tab', 'В лист', 'Параққа');
   String get uploadAllSectionsBtn => _pick(
-        'Upload All 7 Sections',
-        'Выгрузить все 7 разделов',
-        'Барлық 7 бөлімді жүктеу',
+        'Upload All 9 Sections',
+        'Выгрузить все 9 разделов',
+        'Барлық 9 бөлімді жүктеу',
       );
   String get copyTsvShortBtn =>
       _pick('Copy (A1)', 'Копировать (A1)', 'Көшіру (A1)');
@@ -1345,15 +1356,18 @@ class AppStrings {
         'Барлық бөлімдер Google Кестеге жүктелді',
       );
   String get syncAllCatalogAndSectionsBtn => _pick(
-        'Sync All (Catalog + 7 Tabs)',
-        'Выгрузить всё (Каталог + 7 разделов)',
-        'Барлығын жүктеу (Каталог + 7 бөлім)',
+        'Sync All (Catalog + 9 Tabs)',
+        'Выгрузить всё (Каталог + 9 разделов)',
+        'Барлығын жүктеу (Каталог + 9 бөлім)',
       );
   String get allCatalogAndSectionsSyncedMsg => _pick(
-        'Catalog and all 7 sections synced to Google Sheets',
-        'Каталог и все 7 разделов выгружены в Google Таблицу',
-        'Каталог пен барлық 7 бөлім Google Кестеге жүктелді',
+        'Catalog and all 9 sections synced to Google Sheets',
+        'Каталог и все 9 разделов выгружены в Google Таблицу',
+        'Каталог пен барлық 9 бөлім Google Кестеге жүктелді',
       );
+  String get sectionRestock => _pick('To Restock', 'К закупке', 'Сатып алуға');
+  String get sectionStockSnapshots =>
+      _pick('Stock Snapshots', 'Снимки склада', 'Қойма суреттері');
   String get sectionChanges => _pick('Change History', 'История изменений', 'Өзгерістер тарихы');
   String get sectionSales => _pick('Sales', 'Продажи', 'Сатылымдар');
   String get sectionStockIns => _pick('Stock-In', 'Приходы', 'Кірістер');
@@ -1477,5 +1491,830 @@ class AppStrings {
         'Customer removed',
         'Клиент удалён',
         'Клиент жойылды',
+      );
+  String get syncingWithSheetsStatus => _pick(
+        'Syncing with Google Sheets...',
+        'Синхронизация с Google Таблицей...',
+        'Google Кестемен синхрондалуда...',
+      );
+  String sheetSyncUpdatedNotice(int updated, int added) {
+    final partsEn = <String>[
+      if (updated > 0) 'updated $updated',
+      if (added > 0) 'added $added',
+    ];
+    final partsRu = <String>[
+      if (updated > 0) 'обновлено $updated',
+      if (added > 0) 'добавлено $added',
+    ];
+    final partsKk = <String>[
+      if (updated > 0) 'жаңартылды $updated',
+      if (added > 0) 'қосылды $added',
+    ];
+    return _pick(
+      'Google Sheets synced: ${partsEn.join(', ')}',
+      'Из Google Таблицы: ${partsRu.join(', ')}',
+      'Google Кестеден: ${partsKk.join(', ')}',
+    );
+  }
+  String get sheetSyncUpToDateNotice => _pick(
+        'Google Sheets: up to date',
+        'Google Таблица: данные актуальны',
+        'Google Кесте: деректер өзекті',
+      );
+  String sheetSyncErrorNotice(String error) => _pick(
+        'Google Sheets sync error: $error',
+        'Ошибка синхронизации с таблицей: $error',
+        'Кестемен синхрондау қатесі: $error',
+      );
+  String get duplicateCheckBtn => _pick(
+        'Check Duplicates',
+        'Проверить дубликаты',
+        'Қайталанғандарды тексеру',
+      );
+  String get duplicateFoundTitle => _pick(
+        'Duplicate Product Found',
+        'Найден дубликат товара',
+        'Тауардың көшірмесі табылды',
+      );
+  String get duplicateFoundBody => _pick(
+        'A similar product already exists in your catalog:',
+        'В каталоге уже есть похожий товар:',
+        'Каталогта осыған ұқсас тауар бар:',
+      );
+  String get saveAnywayAction => _pick(
+        'Save Anyway',
+        'Всё равно сохранить',
+        'Бәрібір сақтау',
+      );
+  String get duplicateMatchName => _pick(
+        'Same name',
+        'Совпадает название',
+        'Атауы бірдей',
+      );
+  String get duplicateMatchBarcode => _pick(
+        'Same barcode',
+        'Совпадает штрихкод',
+        'Штрих-коды бірдей',
+      );
+  String get duplicateMatchId => _pick(
+        'Same ID',
+        'Совпадает ID',
+        'ID бірдей',
+      );
+  String get noDuplicatesFoundMsg => _pick(
+        'No duplicate products found.',
+        'Дубликаты товаров не найдены.',
+        'Қайталанған тауарлар табылмады.',
+      );
+  String phoneDuplicatesCount(int count) => _pick(
+        'Phone Duplicates: $count',
+        'Дубликаты на телефоне: $count',
+        'Телефондағы дубликаттар: $count',
+      );
+  String sheetDuplicatesCount(int count) => _pick(
+        'Sheet Duplicates: $count',
+        'Дубликаты в таблице: $count',
+        'Кестедегі дубликаттар: $count',
+      );
+  String get sheetDuplicatesCleanedNote => _pick(
+        'Duplicate rows in Google Sheets will be cleaned when you apply sync.',
+        'Дубликаты строк в Google Таблице будут очищены при применении синхронизации.',
+        'Синхрондауды қолданғанда Google Кестедегі қайталанған жолдар тазаланады.',
+      );
+  String rowNumberLabel(int row) => _pick(
+        'Row $row',
+        'Строка $row',
+        '$row-жол',
+      );
+  String get sortLabel => _pick('Sort', 'Сортировка', 'Сұрыптау');
+  String get sortNewest => _pick(
+        'Latest Added',
+        'Последние добавленные',
+        'Соңғы қосылғандар',
+      );
+  String get sortPriceDesc => _pick(
+        'Price: High → Low',
+        'Цена: дорогие сверху',
+        'Баға: қымбаттан',
+      );
+  String get sortPriceAsc => _pick(
+        'Price: Low → High',
+        'Цена: дешёвые сверху',
+        'Баға: арзаннан',
+      );
+  String get sortStockDesc => _pick(
+        'Stock: Most first',
+        'Количество: больше всего',
+        'Қалдық: ең көбі',
+      );
+  String get sortStockAsc => _pick(
+        'Stock: Least first',
+        'Количество: меньше всего',
+        'Қалдық: ең азы',
+      );
+  String get sortMostSold => _pick(
+        'Most Sold',
+        'Самые продаваемые',
+        'Ең көп сатылған',
+      );
+  String get sortNameAsc => _pick(
+        'Name (A–Z)',
+        'По названию (А–Я)',
+        'Атауы бойынша (А–Я)',
+      );
+  String get sortMarginDesc => _pick(
+        'Highest Margin',
+        'Самая высокая маржа',
+        'Ең жоғары маржа',
+      );
+  String get highlightLatestAdded => _pick(
+        'Latest Added',
+        'Последний добавленный',
+        'Соңғы қосылған',
+      );
+  String get highlightMostExpensive => _pick(
+        'Most Expensive',
+        'Самый дорогой',
+        'Ең қымбат',
+      );
+  String get highlightCheapest => _pick(
+        'Cheapest',
+        'Самый дешёвый',
+        'Ең арзан',
+      );
+  String get highlightMostStock => _pick(
+        'Most in Stock',
+        'Больше всего',
+        'Ең көп қалдық',
+      );
+  String get highlightBestSeller => _pick(
+        'Best Seller',
+        'Хит продаж',
+        'Ең көп сатылған',
+      );
+  String get highlightHighestMargin => _pick(
+        'Top Margin',
+        'Макс. маржа',
+        'Ең жоғары маржа',
+      );
+  String soldUnitsBadge(int count) => _pick(
+        'Sold: $count',
+        'Продано: $count',
+        'Сатылды: $count',
+      );
+  String get analyticsTopTab => _pick('Goods', 'Товары', 'Тауарлар');
+  String get analyticsTimeTab =>
+      _pick('Days & Hours', 'Дни и часы', 'Күн мен сағат');
+  String get analyticsSeasonTab =>
+      _pick('Seasonality', 'Сезонность', 'Маусымдылық');
+  String get salesByWeekdayHeader => _pick(
+        'Sales by Day of Week',
+        'Продажи по дням недели',
+        'Апта күндері бойынша сатылым',
+      );
+  String get salesByHourHeader => _pick(
+        'Sales by Hour',
+        'Продажи по часам',
+        'Сағаттар бойынша сатылым',
+      );
+  String get salesByMonthHeader => _pick(
+        'Monthly Seasonality',
+        'Сезонность по месяцам',
+        'Айлар бойынша маусымдылық',
+      );
+  String get peakWeekdayLabel =>
+      _pick('Peak Day', 'Пиковый день', 'Ең белсенді күн');
+  String get peakHourLabel =>
+      _pick('Peak Hour', 'Пиковый час', 'Ең белсенді сағат');
+  String get peakMonthLabel =>
+      _pick('Peak Month', 'Пиковый месяц', 'Ең белсенді ай');
+  String get avgMonthLabel =>
+      _pick('Monthly Avg', 'Среднее в месяц', 'Айлық орташа');
+  String get allYearsLabel =>
+      _pick('All Years', 'Все годы', 'Барлық жыл');
+  String ordersShort(int count) =>
+      _pick('$count ord.', '$count чек.', '$count чек');
+  String weekdayShort(int weekday) {
+    switch (weekday) {
+      case 1:
+        return _pick('Mon', 'Пн', 'Дс');
+      case 2:
+        return _pick('Tue', 'Вт', 'Сс');
+      case 3:
+        return _pick('Wed', 'Ср', 'Ср');
+      case 4:
+        return _pick('Thu', 'Чт', 'Бс');
+      case 5:
+        return _pick('Fri', 'Пт', 'Жм');
+      case 6:
+        return _pick('Sat', 'Сб', 'Сб');
+      case 7:
+        return _pick('Sun', 'Вс', 'Жс');
+      default:
+        return '';
+    }
+  }
+  String weekdayFull(int weekday) {
+    switch (weekday) {
+      case 1:
+        return _pick('Monday', 'Понедельник', 'Дүйсенбі');
+      case 2:
+        return _pick('Tuesday', 'Вторник', 'Сейсенбі');
+      case 3:
+        return _pick('Wednesday', 'Среда', 'Сәрсенбі');
+      case 4:
+        return _pick('Thursday', 'Четверг', 'Бейсенбі');
+      case 5:
+        return _pick('Friday', 'Пятница', 'Жұма');
+      case 6:
+        return _pick('Saturday', 'Суббота', 'Сенбі');
+      case 7:
+        return _pick('Sunday', 'Воскресенье', 'Жексенбі');
+      default:
+        return '';
+    }
+  }
+  String monthShort(int month) {
+    switch (month) {
+      case 1:
+        return _pick('Jan', 'Янв', 'Қаң');
+      case 2:
+        return _pick('Feb', 'Фев', 'Ақп');
+      case 3:
+        return _pick('Mar', 'Мар', 'Нау');
+      case 4:
+        return _pick('Apr', 'Апр', 'Сәу');
+      case 5:
+        return _pick('May', 'Май', 'Мам');
+      case 6:
+        return _pick('Jun', 'Июн', 'Мау');
+      case 7:
+        return _pick('Jul', 'Июл', 'Шіл');
+      case 8:
+        return _pick('Aug', 'Авг', 'Там');
+      case 9:
+        return _pick('Sep', 'Сен', 'Қыр');
+      case 10:
+        return _pick('Oct', 'Окт', 'Қаз');
+      case 11:
+        return _pick('Nov', 'Ноя', 'Қар');
+      case 12:
+        return _pick('Dec', 'Дек', 'Жел');
+      default:
+        return '';
+    }
+  }
+  String monthFull(int month) {
+    switch (month) {
+      case 1:
+        return _pick('January', 'Январь', 'Қаңтар');
+      case 2:
+        return _pick('February', 'Февраль', 'Ақпан');
+      case 3:
+        return _pick('March', 'Март', 'Наурыз');
+      case 4:
+        return _pick('April', 'Апрель', 'Сәуір');
+      case 5:
+        return _pick('May', 'Май', 'Мамыр');
+      case 6:
+        return _pick('June', 'Июнь', 'Маусым');
+      case 7:
+        return _pick('July', 'Июль', 'Шілде');
+      case 8:
+        return _pick('August', 'Август', 'Тамыз');
+      case 9:
+        return _pick('September', 'Сентябрь', 'Қыркүйек');
+      case 10:
+        return _pick('October', 'Октябрь', 'Қазан');
+      case 11:
+        return _pick('November', 'Ноябрь', 'Қараша');
+      case 12:
+        return _pick('December', 'Декабрь', 'Желтоқсан');
+      default:
+        return '';
+    }
+  }
+  String get analyticsOosTab => _pick('Out of Stock', 'Простой', 'Бос тұру');
+  String get outOfStockNowLabel =>
+      _pick('Out of Stock Now', 'Сейчас нет в наличии', 'Қазір қоймада жоқ');
+  String get estimatedLostRevLabel => _pick(
+        'Est. Lost Revenue',
+        'Упущенная выручка',
+        'Жоғалған түсім (болжам)',
+      );
+  String get outOfStockHeader => _pick(
+        'Out-of-Stock Idle Days',
+        'Дни простоя без остатка',
+        'Қалдықсыз бос тұрған күндер',
+      );
+  String get noOutOfStockMsg => _pick(
+        'No out-of-stock idle periods recorded.',
+        'Простоев без остатка пока нет.',
+        'Қалдықсыз бос тұру тіркелмеген.',
+      );
+  String daysShort(int days) => _pick('${days}d', '$days дн.', '$days күн');
+  String oosSummaryLine(int currentDays, int totalDays) => currentDays > 0
+      ? _pick(
+          'Out of stock: ${currentDays}d now • ${totalDays}d total',
+          'Без остатка: сейчас $currentDays дн. • всего $totalDays дн.',
+          'Қалдықсыз: қазір $currentDays күн • барлығы $totalDays күн',
+        )
+      : _pick(
+          'Past out-of-stock total: ${totalDays}d',
+          'Всего без остатка ранее: $totalDays дн.',
+          'Бұрын қалдықсыз тұрғаны: $totalDays күн',
+        );
+  String oosTotalIdleShort(int days) =>
+      _pick('Total idle: ${days}d', 'Всего простой: $days дн.', 'Барлығы: $days күн');
+  String oosEstLossLine(String rev, String? profit) => profit == null
+      ? _pick('Est. loss: $rev', 'Потери (оценка): $rev', 'Болжамды шығын: $rev')
+      : _pick(
+          'Est. loss: $rev (profit $profit)',
+          'Потери (оценка): $rev (прибыль $profit)',
+          'Болжамды шығын: $rev (пайда $profit)',
+        );
+  String get discountReasonLabel => _pick(
+        'Discount reason (optional)',
+        'Причина скидки (необязательно)',
+        'Жеңілдік себебі (міндетті емес)',
+      );
+  String get returnReasonLabel => _pick(
+        'Reason for return / defect (optional)',
+        'Причина возврата / брака (необязательно)',
+        'Қайтару / ақау себебі (міндетті емес)',
+      );
+  String get returnReasonPrefix =>
+      _pick('Reason', 'Причина', 'Себебі');
+  List<String> get discountReasonPresets => [
+        _pick('Regular customer', 'Постоянный клиент', 'Тұрақты клиент'),
+        _pick('Wholesale', 'Опт', 'Көтерме'),
+        _pick('Promo / Sale', 'Акция', 'Акция'),
+        _pick('Negotiated', 'Торг', 'Саудаласу'),
+        _pick('Display / Minor flaw', 'Витрина / уценка', 'Витрина / арзандату'),
+      ];
+  List<String> get returnReasonPresets => [
+        _pick('Wrong size / model', 'Не подошёл', 'Сәйкес келмеді'),
+        _pick('Changed mind', 'Передумал', 'Айнып қалды'),
+        _pick('Cashier mistake', 'Ошибка кассира', 'Кассир қатесі'),
+        _pick('Exchange', 'Обмен', 'Айырбастау'),
+      ];
+  List<String> get defectReasonPresets => [
+        _pick('Factory defect', 'Заводской брак', 'Зауыттық ақау'),
+        _pick('Damaged', 'Повреждение', 'Зақымдалған'),
+        _pick('Incomplete set', 'Некомплект', 'Толық емес'),
+        _pick('Expired', 'Истёк срок', 'Мерзімі өткен'),
+      ];
+  String get customerSegmentTitle => _pick(
+        'Customer Segment',
+        'Сегмент клиента',
+        'Клиент санаты',
+      );
+  String customerSegmentLabel(String name) {
+    switch (name) {
+      case 'wholesale':
+        return _pick('Wholesale', 'Опт', 'Көтерме');
+      case 'regular':
+        return _pick('Regular', 'Постоянный', 'Тұрақты');
+      default:
+        return _pick('Retail', 'Розница', 'Бөлшек');
+    }
+  }
+  String get generateBarcodeAction => _pick(
+        'Generate EAN-13',
+        'Сгенерировать EAN-13',
+        'EAN-13 жасау',
+      );
+  String get barcodeLabelAction => _pick(
+        'Barcode & Price Tag',
+        'Штрих-код и ценник',
+        'Штрих-код және баға белгісі',
+      );
+  String get barcodeLabelTitle => _pick(
+        'Barcode & Label Print',
+        'Штрих-код и печать этикеток',
+        'Штрих-код және затбелгі басып шығару',
+      );
+  String barcodeGeneratedMsg(String code) => _pick(
+        'Generated barcode: $code',
+        'Сгенерирован штрих-код: $code',
+        'Штрих-код жасалды: $code',
+      );
+  String get noBarcodeYetMsg => _pick(
+        'This product has no barcode yet. Generate a unique EAN-13 below.',
+        'У товара пока нет штрих-кода. Нажмите ниже, чтобы сгенерировать уникальный EAN-13.',
+        'Бұл тауарда штрих-код жоқ. Төмендегі батырмамен бірегей EAN-13 жасаңыз.',
+      );
+  String get generateAndSaveBarcodeBtn => _pick(
+        'Generate & Save EAN-13',
+        'Сгенерировать и сохранить EAN-13',
+        'EAN-13 жасау және сақтау',
+      );
+  String get labelFormatThermal => _pick(
+        'Thermal 58×40 mm',
+        'Этикетка 58×40 мм',
+        'Затбелгі 58×40 мм',
+      );
+  String get labelFormatA4 => _pick(
+        'A4 Sheet (24/page)',
+        'Лист A4 (24 шт.)',
+        'A4 парағы (24 дана)',
+      );
+  String get labelCountLabel => _pick(
+        'Number of labels',
+        'Количество наклеек',
+        'Жапсырма саны',
+      );
+  String get showPriceOnLabel => _pick(
+        'Show price',
+        'Показывать цену',
+        'Бағаны көрсету',
+      );
+  String get showShopNameOnLabel => _pick(
+        'Show shop name',
+        'Название магазина',
+        'Дүкен атауын көрсету',
+      );
+  String get shareBarcodePdfBtn => _pick(
+        'Export / Print PDF',
+        'Сохранить / Печать PDF',
+        'PDF сақтау / Басып шығару',
+      );
+  String get barcodeTypeSku => _pick('Unit (SKU)', 'Штука (SKU)', 'Дана (SKU)');
+  String get barcodeTypePack => _pick('Pack', 'Упаковка', 'Қаптама');
+  String get barcodeTypeBox => _pick('Box', 'Коробка', 'Қорап');
+  String get ean13ValidBadge => _pick('EAN-13', 'EAN-13', 'EAN-13');
+  String get customCodeBadge => _pick('Code 128', 'Code 128', 'Code 128');
+
+  // Daily product advice
+  String get dailyAdviceTitle => _pick(
+        'Daily Product Advice',
+        'Советы дня по товарам',
+        'Тауарлар бойынша күн кеңесі',
+      );
+  String get dailyAdviceBadge => _pick(
+        'Tip of the Day',
+        'Совет дня',
+        'Күн кеңесі',
+      );
+  String dailyAdviceMoreLabel(int extra) => _pick(
+        '+$extra more',
+        'ещё $extra',
+        'тағы $extra',
+      );
+  String get dailyAdviceAllGoodTitle => _pick(
+        'Catalog looks healthy today',
+        'Сегодня с товарами всё в порядке',
+        'Бүгін тауарларда мәселе жоқ',
+      );
+  String get dailyAdviceAllGoodBody => _pick(
+        'No urgent stockouts, margin drops, or dead-stock alerts right now.',
+        'Срочных простоев, падения маржи или проблемных остатков сейчас не найдено.',
+        'Шұғыл таусылу, маржа төмендеуі немесе проблемалық қалдықтар табылмады.',
+      );
+  String get adviceSeverityUrgent => _pick('Urgent', 'Срочно', 'Шұғыл');
+  String get adviceSeverityWarning => _pick('Attention', 'Внимание', 'Назар аударыңыз');
+  String get adviceSeverityOpportunity =>
+      _pick('Opportunity', 'Возможность', 'Мүмкіндік');
+  String get adviceSeverityInfo => _pick('Tip', 'Совет', 'Кеңес');
+
+  String adviceRestockHitTitle(String name) => _pick(
+        'Restock best-seller: $name',
+        'Срочно дозакажите: $name',
+        'Шұғыл толықтырыңыз: $name',
+      );
+  String adviceRestockHitBody(int days, String lostRev) => _pick(
+        'Out of stock for ${days}d. Estimated missed sales: ~$lostRev. Add to your next stock-in.',
+        'Нет в наличии уже $days дн. Оценка упущенной выручки: ~$lostRev. Добавьте в приход.',
+        '$days күннен бері қоймада жоқ. Жоғалған түсім болжамы: ~$lostRev. Кіріске қосыңыз.',
+      );
+  String adviceLowStockHitTitle(String name) => _pick(
+        'Running low: $name',
+        'Скоро закончится: $name',
+        'Таусылуға жақын: $name',
+      );
+  String adviceLowStockHitBody(int stock, int estDays) => _pick(
+        'Only $stock left (~$estDays d of sales at current pace). Order ahead to avoid stockout.',
+        'Осталось $stock шт. (примерно на $estDays дн. продаж). Закажите заранее, чтобы не уйти в простой.',
+        'Тек $stock дана қалды (шамамен $estDays күнге жетеді). Алдын ала тапсырыс беріңіз.',
+      );
+  String adviceMarginDropTitle(String name) => _pick(
+        'Cost went up: $name',
+        'Вырос закуп: $name',
+        'Сатып алу бағасы өсті: $name',
+      );
+  String adviceMarginDropBody(
+    String oldCost,
+    String newCost,
+    String marginPct,
+  ) =>
+      _pick(
+        'Incoming cost rose from $oldCost to $newCost. Current margin is $marginPct% — review your sell price.',
+        'Цена прихода выросла с $oldCost до $newCost. Текущая маржа — $marginPct%. Проверьте цену продажи.',
+        'Кіріс бағасы $oldCost → $newCost болды. Қазіргі маржа — $marginPct%. Сату бағасын тексеріңіз.',
+      );
+  String adviceLowMarginTitle(String name) => _pick(
+        'Low margin on $name',
+        'Низкая маржа: $name',
+        'Төмен маржа: $name',
+      );
+  String adviceLowMarginBody(String cost, String sell, String marginPct) =>
+      _pick(
+        'Cost $cost vs sell $sell ($marginPct% margin). Consider raising price or renegotiating with supplier.',
+        'Закуп $cost, продажа $sell (маржа $marginPct%). Проверьте, не продаёте ли товар почти в ноль.',
+        'Өзіндік құны $cost, сату бағасы $sell (маржа $marginPct%). Бағаны қайта қараңыз.',
+      );
+  String adviceDeadStockTitle(String name) => _pick(
+        'Slow mover: $name',
+        'Залежался товар: $name',
+        'Өтпей тұрған тауар: $name',
+      );
+  String adviceDeadStockBody(int stock, String frozenAmount) => _pick(
+        '$stock in stock ($frozenAmount frozen) with 0 sales in 30 days. Try a promo discount or bundle.',
+        'На складе $stock шт. (заморожено $frozenAmount), за 30 дней не было продаж. Сделайте акцию или комплект.',
+        'Қоймада $stock дана ($frozenAmount тоқтап тұр), 30 күнде сатылым жоқ. Акция немесе жеңілдік жасап көріңіз.',
+      );
+  String advicePeakDayTitle(String weekdayName) => _pick(
+        'Peak sales day ahead: $weekdayName',
+        'Впереди пиковый день: $weekdayName',
+        'Алда ең белсенді күн: $weekdayName',
+      );
+  String advicePeakDayBody(String topNames) => _pick(
+        'Historically your busiest day. Double-check stock on top sellers: $topNames.',
+        'По вашей статистике это самый сильный день. Проверьте наличие хитов: $topNames.',
+        'Статистика бойынша бұл ең белсенді күн. Хит тауарлардың қалдығын тексеріңіз: $topNames.',
+      );
+  String adviceMissingBarcodeTitle(int count) => _pick(
+        '$count product(s) without barcode',
+        'Товаров без штрих-кода: $count',
+        'Штрих-коды жоқ тауарлар: $count',
+      );
+  String adviceMissingBarcodeBody(String sampleName) => _pick(
+        'Generate EAN-13 labels (e.g. for "$sampleName") to speed up checkout and stocktakes.',
+        'Сгенерируйте EAN-13 (например, для «$sampleName»), чтобы ускорить продажи и ревизию.',
+        'Сату мен түгендеуді жылдамдату үшін EAN-13 жасаңыз (мысалы, «$sampleName»).',
+      );
+  String get adviceUpdatePriceBtn =>
+      _pick('Update Price', 'Изменить цену', 'Бағаны өзгерту');
+  String get adviceOpenProductBtn =>
+      _pick('Open', 'Открыть', 'Ашу');
+  String get adviceGenerateBarcodeBtn =>
+      _pick('Barcode', 'Штрих-код', 'Штрих-код');
+
+  // Wholesale prices
+  String get wholesalePriceLabel => _pick(
+        'Wholesale Price (optional)',
+        'Оптовая цена (необяз.)',
+        'Көтерме баға (міндетті емес)',
+      );
+  String get wholesaleShort => _pick('Wholesale', 'Опт', 'Көтерме');
+  String get wholesaleModeChip =>
+      _pick('Wholesale', 'Оптовые цены', 'Көтерме баға');
+  String get wholesaleAppliedBadge => _pick('Wholesale', 'Опт', 'Көтерме');
+
+  // Monthly inventory value snapshots
+  String get byCategoriesTab =>
+      _pick('By Categories', 'По категориям', 'Санаттар бойынша');
+  String get byMonthsTab =>
+      _pick('By Months', 'По месяцам', 'Айлар бойынша');
+  String get updateCurrentMonthSnapshotBtn => _pick(
+        'Update This Month',
+        'Обновить за этот месяц',
+        'Осы айды жаңарту',
+      );
+  String get snapshotUpdatedMsg => _pick(
+        'Monthly stock snapshot updated',
+        'Снимок стоимости склада за этот месяц обновлён',
+        'Осы айдың қойма құны жаңартылды',
+      );
+  String get noMonthlySnapshotsMsg => _pick(
+        'Monthly snapshots are saved automatically once per month when you have active products.',
+        'Снимки стоимости склада сохраняются автоматически раз в месяц при наличии активных товаров.',
+        'Қойма құнының суреттері белсенді тауарлар болған кезде айына бір рет автоматты сақталады.',
+      );
+  String get snapshotAutoNote => _pick(
+        'Saved automatically once a month. Tap above to refresh the current month.',
+        'Сохраняется автоматически раз в месяц. Нажмите выше, чтобы обновить текущий месяц.',
+        'Айына бір рет автоматты сақталады. Ағымдағы айды жаңарту үшін жоғарыдағы батырманы басыңыз.',
+      );
+  String snapshotCapturedLabel(String date) =>
+      _pick('Captured: $date', 'Снимок: $date', 'Уақыты: $date');
+  String snapshotItemsUnits(int items, int units) => _pick(
+        '$items items • $units units',
+        '$items поз. • $units шт.',
+        '$items тауар • $units дана',
+      );
+
+  // Built-in feature usage statistics
+  String get featureUsageBtn => _pick(
+        'Feature Usage Stats',
+        'Статистика функций',
+        'Функциялар статистикасы',
+      );
+  String get featureUsageTitle => _pick(
+        'Feature Usage',
+        'Использование функций',
+        'Функцияларды пайдалану',
+      );
+  String featureUsageSubtitle(int totalTaps, int usedCount, int totalCount) =>
+      _pick(
+        '$totalTaps taps • $usedCount/$totalCount used',
+        'Нажатий: $totalTaps • используется $usedCount из $totalCount',
+        'Басулар: $totalTaps • $usedCount/$totalCount қолданылды',
+      );
+  String get featureUsageTotalLabel =>
+      _pick('Total Taps', 'Всего нажатий', 'Барлық басу');
+  String get featureUsageUsedLabel =>
+      _pick('Active', 'Используется', 'Қолданылады');
+  String get featureUsageUnusedLabel =>
+      _pick('Unused (0)', 'Не открывались', 'Ашылмаған');
+  String get featureUsageFilterAll => _pick('All', 'Все', 'Барлығы');
+  String get featureUsageFilterUsed =>
+      _pick('Most Used', 'Частые', 'Жиі');
+  String get featureUsageFilterUnused =>
+      _pick('Unused', 'Нулевые', 'Нөлдік');
+  String get featureUsageNeverUsed =>
+      _pick('Never opened yet', 'Ещё не открывалось', 'Әлі ашылмаған');
+  String featureUsageLastUsed(String date) =>
+      _pick('Last: $date', 'Последний раз: $date', 'Соңғы рет: $date');
+  String get featureUsageHintNote => _pick(
+        'Counts are saved locally on this phone. Top features belong on the main screen; 0-count features can be moved to menus.',
+        'Счётчик хранится локально на телефоне и не нагружает синхронизацию. Частые функции стоит держать на первом экране, а редкие и нулевые — убирать в меню.',
+        'Санауыш тек телефонда сақталады. Жиі қолданылатындарды басты экранда қалдырып, нөлдіктерін мәзірге ауыстыруға болады.',
+      );
+  String get featureUsageResetTitle => _pick(
+        'Reset usage stats?',
+        'Сбросить статистику?',
+        'Статистиканы нөлдеу керек пе?',
+      );
+  String get featureUsageResetBody => _pick(
+        'All local screen and button tap counters will be cleared to zero.',
+        'Все локальные счётчики открытий экранов и кнопок будут обнулены.',
+        'Экрандар мен батырмаларды ашу санауыштары нөлге түсіріледі.',
+      );
+  String get featureUsageResetDoneMsg => _pick(
+        'Feature usage stats reset',
+        'Статистика функций сброшена',
+        'Функциялар статистикасы нөлденді',
+      );
+  String get featureUsageEmptyFilterMsg => _pick(
+        'No features match this filter yet.',
+        'По этому фильтру пока нет записей.',
+        'Бұл сүзгі бойынша жазба жоқ.',
+      );
+
+  String featureUsageGroupLabel(String group) {
+    switch (group) {
+      case 'tabs':
+        return _pick('Tab', 'Вкладка', 'Қойынды');
+      case 'goods':
+        return _pick('Goods', 'Склад', 'Қойма');
+      case 'pos':
+        return _pick('Sell', 'Касса', 'Касса');
+      case 'sales':
+        return _pick('Sales', 'Продажи', 'Сатылымдар');
+      case 'expenses':
+        return _pick('Expenses', 'Расходы', 'Шығындар');
+      case 'settings':
+        return _pick('Settings', 'Настройки', 'Баптаулар');
+      default:
+        return group;
+    }
+  }
+
+  String featureUsageName(String key) {
+    switch (key) {
+      case 'tab_goods':
+        return _pick('Tab: Goods', 'Вкладка: Товары', 'Қойынды: Тауарлар');
+      case 'tab_sell':
+        return _pick('Tab: Sell (POS)', 'Вкладка: Продажа', 'Қойынды: Сату');
+      case 'tab_sales':
+        return _pick('Tab: Sales', 'Вкладка: Продажи', 'Қойынды: Сатылымдар');
+      case 'tab_expenses':
+        return _pick('Tab: Expenses', 'Вкладка: Расходы', 'Қойынды: Шығындар');
+      case 'barcode_scan':
+        return _pick('Barcode Scanner', 'Сканер штрих-кода', 'Штрих-код сканері');
+      case 'barcode_label':
+        return _pick('Barcode & Labels', 'Штрих-код и этикетки', 'Штрих-код және затбелгі');
+      case 'stock_in':
+        return _pick('Stock-In', 'Приход товара', 'Тауар кірісі');
+      case 'stocktake':
+        return _pick('Stocktake', 'Ревизия склада', 'Қойманы түгендеу');
+      case 'product_add':
+        return _pick('Add Product', 'Добавление товара', 'Тауар қосу');
+      case 'product_edit':
+        return _pick('Edit Product', 'Редактирование товара', 'Тауарды өңдеу');
+      case 'change_history':
+        return _pick('Change History', 'История изменений', 'Өзгерістер тарихы');
+      case 'daily_advice':
+        return _pick('Daily Advice', 'Советы дня', 'Күн кеңестері');
+      case 'stock_value':
+        return _pick('Stock Value & Snapshots', 'Сумма склада и снимки', 'Қор құны және суреттер');
+      case 'duplicate_check':
+        return _pick('Duplicate Check', 'Проверка дубликатов', 'Дубликаттарды тексеру');
+      case 'sale_complete':
+        return _pick('Complete Sale', 'Оформление продажи', 'Сатуды аяқтау');
+      case 'hold_sale':
+        return _pick('Hold / Held Sales', 'Отложенные чеки', 'Кейінге қалдырылған чектер');
+      case 'wholesale_mode':
+        return _pick('Wholesale Mode', 'Оптовые цены', 'Көтерме баға режимі');
+      case 'return_exchange':
+        return _pick('Return / Exchange', 'Возврат / Обмен', 'Қайтару / Айырбастау');
+      case 'debtors':
+        return _pick('Debtors', 'Должники', 'Борышкерлер');
+      case 'customers':
+        return _pick('Customers', 'Клиенты', 'Клиенттер');
+      case 'analytics':
+        return _pick('Top Goods & Analytics', 'Аналитика / Топ-товары', 'Талдау / Үздік тауарлар');
+      case 'invoices_history':
+        return _pick('Invoices History', 'История накладных', 'Жүкқұжаттар тарихы');
+      case 'defect_report':
+        return _pick('Defect Report', 'Отчёт по браку', 'Ақау есебі');
+      case 'expense_add':
+        return _pick('Add Expense', 'Добавление расхода', 'Шығын қосу');
+      case 'incoming_prices':
+        return _pick('Incoming Prices', 'Анализ цен прихода', 'Кіріс бағаларын талдау');
+      case 'google_sheets':
+        return _pick('Google Sheets Sync', 'Google Таблица', 'Google Кесте');
+      case 'backup_export':
+        return _pick('Backup & Export', 'Экспорт и бэкап', 'Экспорт және бэкап');
+      case 'archive_trash':
+        return _pick('Archive & Trash', 'Архив и корзина', 'Мұрағат және себет');
+      default:
+        return key;
+    }
+  }
+
+  // PIN recovery
+  String get forgotPinBtn => _pick(
+        'Forgot PIN?',
+        'Забыли PIN-код?',
+        'PIN-кодты ұмыттыңыз ба?',
+      );
+  String get resetPinTitle => _pick(
+        'Reset Owner PIN',
+        'Сброс PIN-кода',
+        'PIN-кодты қалпына келтіру',
+      );
+  String get resetPinConfirmBody => _pick(
+        'Verify your identity using your phone\'s fingerprint, face, or screen lock to reset the Owner PIN and unlock Owner Mode.',
+        'Подтвердите личность отпечатком, лицом или паролем экрана телефона, чтобы сбросить PIN-код и открыть режим владельца.',
+        'PIN-кодты өшіріп, иесі режимін ашу үшін телефонның саусақ ізі, бет немесе экран құпия сөзімен растаңыз.',
+      );
+  String get resetPinPromptReason => _pick(
+        'Verify your identity to reset the Owner PIN',
+        'Подтвердите личность для сброса PIN-кода владельца',
+        'Иесінің PIN-кодын өшіру үшін жеке басыңызды растаңыз',
+      );
+  String get pinResetSuccessMsg => _pick(
+        'PIN reset. Owner Mode unlocked.',
+        'PIN-код сброшен. Режим владельца открыт.',
+        'PIN-код өшірілді. Иесі режимі ашылды.',
+      );
+
+  // Daily advice export, copy & gestures
+  String get shareAdviceBtn => _pick(
+        'Share Advice',
+        'Поделиться советом',
+        'Кеңеспен бөлісу',
+      );
+  String get exportAllAdvicesBtn => _pick(
+        'Export Advice',
+        'Выгрузить советы',
+        'Кеңестерді жүктеу',
+      );
+  String get shareAdviceTextAction => _pick(
+        'Share as Text',
+        'Отправить текстом',
+        'Мәтін ретінде жіберу',
+      );
+  String get exportAdviceFileAction => _pick(
+        'Export File (.txt)',
+        'Выгрузить файл (.txt)',
+        'Файл ретінде жүктеу (.txt)',
+      );
+  String get copyAllAdvicesAction => _pick(
+        'Copy All',
+        'Копировать все',
+        'Барлығын көшіру',
+      );
+  String get adviceCopiedMsg => _pick(
+        'Advice copied',
+        'Совет скопирован',
+        'Кеңес көшірілді',
+      );
+  String get noOtherAdviceMsg => _pick(
+        'No other advice right now',
+        'Других советов сейчас нет',
+        'Қазір басқа кеңес жоқ',
+      );
+  String get adviceGesturesHint => _pick(
+        'Hold to copy • Double-tap for another tip',
+        'Удержание — копировать • 2× нажатие — новый совет',
+        'Ұстап тұру — көшіру • 2× басу — жаңа кеңес',
+      );
+  String get nextAdviceBtn => _pick(
+        'Next Advice',
+        'Другой совет',
+        'Басқа кеңес',
       );
 }

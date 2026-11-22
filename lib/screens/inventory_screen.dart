@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -9,7 +10,9 @@ import '../models/product.dart';
 import '../services/export_service.dart';
 import '../services/sheet_export_helper.dart';
 import '../state/shop_controller.dart';
+import '../widgets/barcode_label_sheet.dart';
 import '../widgets/currency_calculator_dialog.dart';
+import '../widgets/daily_advice_sheet.dart';
 import '../widgets/formatters.dart';
 import '../widgets/product_form_sheet.dart';
 import '../widgets/settings_button.dart';
@@ -18,6 +21,17 @@ import '../widgets/stocktake_sheet.dart';
 import 'barcode_scanner_screen.dart';
 
 enum _StockFilter { all, inStock, inMinus, lowStock, outOfStock }
+
+enum _ProductSort {
+  newest,
+  priceDesc,
+  priceAsc,
+  stockDesc,
+  stockAsc,
+  mostSold,
+  nameAsc,
+  marginDesc,
+}
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key, required this.controller});
@@ -30,21 +44,95 @@ class InventoryScreen extends StatefulWidget {
 
 class _InventoryScreenState extends State<InventoryScreen> {
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _listScrollController = ScrollController();
   String _searchQuery = '';
   String? _selectedCategory;
   _StockFilter _stockFilter = _StockFilter.all;
+  _ProductSort _sortBy = _ProductSort.newest;
+  bool _controlsVisible = true;
   bool _selectionMode = false;
   final Set<String> _selectedIds = <String>{};
+  String? _dismissedAdviceDayKey;
+  int _adviceCycleOffset = 0;
+
+  String get _todayKey {
+    final now = DateTime.now();
+    return '${now.year}-${now.month}-${now.day}';
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _listScrollController.dispose();
     super.dispose();
   }
 
-  List<Product> _filteredProducts() {
+  void _selectSort(_ProductSort sort) {
+    setState(() => _sortBy = sort);
+    if (_listScrollController.hasClients && _listScrollController.offset > 0) {
+      _listScrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (notification.metrics.axis != Axis.vertical) return false;
+    if (notification.metrics.pixels <= 12) {
+      if (!_controlsVisible) {
+        setState(() => _controlsVisible = true);
+      }
+      return false;
+    }
+    if (notification is UserScrollNotification) {
+      if (notification.direction == ScrollDirection.reverse &&
+          _controlsVisible &&
+          notification.metrics.pixels > 24) {
+        setState(() => _controlsVisible = false);
+      } else if (notification.direction == ScrollDirection.forward &&
+          !_controlsVisible) {
+        setState(() => _controlsVisible = true);
+      }
+    }
+    return false;
+  }
+
+  Map<String, int> _computeSoldUnitsByProduct() {
+    final counts = <String, int>{};
+    for (final sale in widget.controller.sales) {
+      for (final item in sale.items) {
+        counts[item.productId] = (counts[item.productId] ?? 0) + item.quantity;
+      }
+    }
+    return counts;
+  }
+
+  String _sortOptionLabel(_ProductSort sort, dynamic strings) {
+    switch (sort) {
+      case _ProductSort.newest:
+        return strings.sortNewest;
+      case _ProductSort.priceDesc:
+        return strings.sortPriceDesc;
+      case _ProductSort.priceAsc:
+        return strings.sortPriceAsc;
+      case _ProductSort.stockDesc:
+        return strings.sortStockDesc;
+      case _ProductSort.stockAsc:
+        return strings.sortStockAsc;
+      case _ProductSort.mostSold:
+        return strings.sortMostSold;
+      case _ProductSort.nameAsc:
+        return strings.sortNameAsc;
+      case _ProductSort.marginDesc:
+        return strings.sortMarginDesc;
+    }
+  }
+
+  List<Product> _filteredProducts(Map<String, int> soldUnitsByProduct) {
     final query = _searchQuery.trim().toLowerCase();
-    return widget.controller.products.where((product) {
+    final list = widget.controller.products.where((product) {
       if (_selectedCategory != null && product.category != _selectedCategory) {
         return false;
       }
@@ -69,6 +157,33 @@ class _InventoryScreenState extends State<InventoryScreen> {
           product.packBarcode.toLowerCase().contains(query) ||
           product.boxBarcode.toLowerCase().contains(query);
     }).toList();
+
+    switch (_sortBy) {
+      case _ProductSort.newest:
+        break;
+      case _ProductSort.priceDesc:
+        list.sort((a, b) => b.sellPrice.compareTo(a.sellPrice));
+      case _ProductSort.priceAsc:
+        list.sort((a, b) => a.sellPrice.compareTo(b.sellPrice));
+      case _ProductSort.stockDesc:
+        list.sort((a, b) => b.stock.compareTo(a.stock));
+      case _ProductSort.stockAsc:
+        list.sort((a, b) => a.stock.compareTo(b.stock));
+      case _ProductSort.mostSold:
+        list.sort((a, b) {
+          final cmp = (soldUnitsByProduct[b.id] ?? 0)
+              .compareTo(soldUnitsByProduct[a.id] ?? 0);
+          if (cmp != 0) return cmp;
+          return b.sellPrice.compareTo(a.sellPrice);
+        });
+      case _ProductSort.nameAsc:
+        list.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
+      case _ProductSort.marginDesc:
+        list.sort((a, b) => b.marginPercent.compareTo(a.marginPercent));
+    }
+    return list;
   }
 
   Future<void> _openProductForm({
@@ -120,6 +235,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
       product.copyWith(
         sellPrice: result.sellPrice,
         costPrice: result.costPrice,
+        wholesalePrice: result.wholesalePrice,
         stock: result.stock,
       ),
     );
@@ -142,7 +258,49 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
+  void _showBarcodeLabel(Product product) {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.barcodeLabel);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => BarcodeLabelSheet(
+        controller: widget.controller,
+        product: product,
+      ),
+    );
+  }
+
+  void _openDailyAdvice() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.dailyAdvice);
+    final strings = widget.controller.strings;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => DailyAdviceSheet(
+        controller: widget.controller,
+        onAddToStockIn: (product) async {
+          final totalQty =
+              await widget.controller.addProductToStockInDraft(product);
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                strings.scannedAddedToStockInMsg(1, product.name, totalQty),
+              ),
+            ),
+          );
+        },
+        onEditPrice: (product) => _openQuickEdit(product),
+        onOpenBarcodeLabel: (product) => _showBarcodeLabel(product),
+        onOpenProduct: (product) => _showProductHistory(product),
+      ),
+    );
+  }
+
   Future<void> _openBarcodeLookup() async {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.barcodeScan);
     final strings = widget.controller.strings;
     final sku = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
@@ -169,6 +327,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
   }
 
   Future<void> _openStockIn() async {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.stockIn);
     final units = await showModalBottomSheet<int>(
       context: context,
       isScrollControlled: true,
@@ -183,6 +342,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
   }
 
   Future<void> _openStocktake() async {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.stocktake);
     final changed = await showModalBottomSheet<int>(
       context: context,
       isScrollControlled: true,
@@ -643,76 +803,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
   }
 
   void _showStockValueBreakdown() {
-    final strings = widget.controller.strings;
-    final currency = widget.controller.currency;
-    final products = widget.controller.products;
-    final costByCat = <String, double>{};
-    final sellByCat = <String, double>{};
-    for (final p in products) {
-      final cat = p.category.trim().isEmpty ? 'General' : p.category.trim();
-      costByCat[cat] = (costByCat[cat] ?? 0.0) + p.inventoryValue;
-      sellByCat[cat] = (sellByCat[cat] ?? 0.0) + p.potentialRevenue;
-    }
-    final sortedCats = costByCat.keys.toList()
-      ..sort((a, b) => (costByCat[b] ?? 0).compareTo(costByCat[a] ?? 0));
-    final totalCost = widget.controller.totalInventoryCostValue;
-    final totalSell = widget.controller.totalPotentialRevenue;
-
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.stockValue);
     showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
-      builder: (sheetCtx) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              strings.stockValueLabel,
-              style: Theme.of(sheetCtx).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '${strings.costBasisLabel}: ${formatMoney(totalCost, currency)}  •  '
-              '${strings.sellValueLabel}: ${formatMoney(totalSell, currency)}',
-              style: Theme.of(sheetCtx).textTheme.bodySmall,
-            ),
-            Text(
-              '${strings.profitLabel}: ${formatMoney(totalSell - totalCost, currency)}',
-              style: Theme.of(sheetCtx).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 340),
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: sortedCats.length,
-                separatorBuilder: (_, _) => const Divider(height: 1),
-                itemBuilder: (_, index) {
-                  final cat = sortedCats[index];
-                  return ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(cat),
-                    subtitle: Text(
-                      '${strings.sellValueLabel}: ${formatMoney(sellByCat[cat] ?? 0, currency)}',
-                    ),
-                    trailing: Text(
-                      formatMoney(costByCat[cat] ?? 0, currency),
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    onTap: () {
-                      Navigator.of(sheetCtx).pop();
-                      setState(() => _selectedCategory = cat);
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
+      builder: (sheetCtx) => _StockValueBreakdownSheet(
+        controller: widget.controller,
+        onSelectCategory: (cat) {
+          Navigator.of(sheetCtx).pop();
+          setState(() => _selectedCategory = cat);
+        },
       ),
     );
   }
@@ -796,6 +897,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
 
   void _openChangeHistory() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.changeHistory);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -803,6 +905,26 @@ class _InventoryScreenState extends State<InventoryScreen> {
       builder: (_) => _ProductChangeHistorySheet(
         controller: widget.controller,
         onOpenProduct: (product) => _openQuickEdit(product),
+      ),
+    );
+  }
+
+  void _openDuplicateChecker() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.duplicateCheck);
+    final groups = widget.controller.findLocalDuplicateGroups();
+    if (groups.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.strings.noDuplicatesFoundMsg)),
+      );
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _LocalDuplicatesSheet(
+        controller: widget.controller,
+        onEditProduct: (product) => _openProductForm(existing: product),
       ),
     );
   }
@@ -819,7 +941,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
           });
         }
         final strings = widget.controller.strings;
-        final products = _filteredProducts();
+        final soldUnitsByProduct = _computeSoldUnitsByProduct();
+        final products = _filteredProducts(soldUnitsByProduct);
+        final showControls =
+            _controlsVisible || _selectionMode || products.isEmpty;
         final categories = widget.controller.categories;
         final categoryCounts = <String, int>{};
         for (final p in widget.controller.products) {
@@ -828,10 +953,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
             categoryCounts[cat] = (categoryCounts[cat] ?? 0) + 1;
           }
         }
-        final groupProducts = _selectedCategory == null
-            ? widget.controller.products
-            : widget.controller.products
-                .where((p) => p.category == _selectedCategory);
+        final groupProducts = (_selectedCategory == null
+                ? widget.controller.products
+                : widget.controller.products
+                    .where((p) => p.category == _selectedCategory))
+            .toList();
         var inStockCount = 0;
         var inMinusCount = 0;
         var outOfStockCount = 0;
@@ -861,6 +987,25 @@ class _InventoryScreenState extends State<InventoryScreen> {
         final visibleIds = products.map((p) => p.id).toList();
         final allVisibleSelected = visibleIds.isNotEmpty &&
             visibleIds.every((id) => _selectedIds.contains(id));
+        final dailyAdvices = isCashier
+            ? const <DailyProductAdvice>[]
+            : widget.controller.dailyProductAdvices();
+        final baseFeaturedAdvice = isCashier
+            ? null
+            : widget.controller.featuredDailyAdvice(dailyAdvices);
+        DailyProductAdvice? featuredAdvice = baseFeaturedAdvice;
+        int? activeAdviceNumber;
+        if (featuredAdvice != null && dailyAdvices.isNotEmpty) {
+          final baseIndex = dailyAdvices.indexWhere(
+            (a) => a.id == baseFeaturedAdvice!.id,
+          );
+          final start = baseIndex >= 0 ? baseIndex : 0;
+          final idx = (start + _adviceCycleOffset) % dailyAdvices.length;
+          featuredAdvice = dailyAdvices[idx];
+          if (_adviceCycleOffset > 0) {
+            activeAdviceNumber = idx + 1;
+          }
+        }
 
         return Scaffold(
           resizeToAvoidBottomInset: false,
@@ -921,6 +1066,21 @@ class _InventoryScreenState extends State<InventoryScreen> {
               : AppBar(
                   title: Text(strings.shopInventory),
                   actions: [
+                    if (!isCashier && widget.controller.products.isNotEmpty)
+                      IconButton(
+                        tooltip: strings.dailyAdviceTitle,
+                        onPressed: _openDailyAdvice,
+                        icon: Badge(
+                          isLabelVisible: dailyAdvices.isNotEmpty,
+                          backgroundColor: dailyAdvices.any(
+                            (a) => a.severity == AdviceSeverity.urgent,
+                          )
+                              ? Theme.of(context).colorScheme.error
+                              : Theme.of(context).colorScheme.primary,
+                          label: Text('${dailyAdvices.length}'),
+                          child: const Icon(Icons.tips_and_updates_outlined),
+                        ),
+                      ),
                     if (!isCashier)
                       IconButton(
                         tooltip: strings.changeHistoryBtn,
@@ -944,6 +1104,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       PopupMenuButton<String>(
                         onSelected: (value) {
                           if (value == 'select') _enterSelectionMode();
+                          if (value == 'check_duplicates') {
+                            _openDuplicateChecker();
+                          }
                           if (value == 'new_group') _promptCreateGroup();
                           if (value == 'move_group') _promptMoveGroupToGroup();
                           if (value == 'group_archive_trash') {
@@ -962,6 +1125,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 contentPadding: EdgeInsets.zero,
                                 leading: const Icon(Icons.checklist),
                                 title: Text(strings.selectItemsBtn),
+                              ),
+                            ),
+                          if (widget.controller.products.isNotEmpty)
+                            PopupMenuItem(
+                              value: 'check_duplicates',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.copy_all_outlined),
+                                title: Text(strings.duplicateCheckBtn),
                               ),
                             ),
                           PopupMenuItem(
@@ -1024,20 +1197,88 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ),
           floatingActionButton: (isCashier || _selectionMode)
               ? null
-              : FloatingActionButton.extended(
-                  onPressed: () => _openProductForm(),
-                  icon: const Icon(Icons.add),
-                  label: Text(strings.addGood),
+              : AnimatedSlide(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  offset: showControls ? Offset.zero : const Offset(0, 1.6),
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 180),
+                    opacity: showControls ? 1 : 0,
+                    child: IgnorePointer(
+                      ignoring: !showControls,
+                      child: FloatingActionButton.extended(
+                        onPressed: () => _openProductForm(),
+                        icon: const Icon(Icons.add),
+                        label: Text(strings.addGood),
+                      ),
+                    ),
+                  ),
                 ),
           body: Column(
             children: [
-              if (!isCashier)
-                _InventorySummaryStrip(
-                  controller: widget.controller,
-                  onTapProducts: _showProductsBreakdown,
-                  onTapStockValue: _showStockValueBreakdown,
-                  onTapTodayProfit: _showTodayProfitBreakdown,
+              ClipRect(
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: showControls
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!isCashier)
+                              _InventorySummaryStrip(
+                                controller: widget.controller,
+                                onTapProducts: _showProductsBreakdown,
+                                onTapStockValue: _showStockValueBreakdown,
+                                onTapTodayProfit: _showTodayProfitBreakdown,
+                              ),
+                            if (!isCashier &&
+                                featuredAdvice != null &&
+                                _dismissedAdviceDayKey != _todayKey &&
+                                _searchQuery.isEmpty &&
+                                !_selectionMode)
+                              DailyAdviceBanner(
+                                controller: widget.controller,
+                                featured: featuredAdvice,
+                                totalCount: dailyAdvices.length,
+                                currentIndex: activeAdviceNumber,
+                                onTapOpenAll: _openDailyAdvice,
+                                onDoubleTapNext: () {
+                                  if (dailyAdvices.length <= 1) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(strings.noOtherAdviceMsg),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                  HapticFeedback.lightImpact();
+                                  setState(() {
+                                    _adviceCycleOffset =
+                                        (_adviceCycleOffset + 1) %
+                                        dailyAdvices.length;
+                                  });
+                                },
+                                onDismissToday: () => setState(
+                                  () => _dismissedAdviceDayKey = _todayKey,
+                                ),
+                              ),
+                            if (groupProducts.isNotEmpty &&
+                                _searchQuery.isEmpty &&
+                                !_selectionMode)
+                              _InventoryHighlightsStrip(
+                                controller: widget.controller,
+                                products: groupProducts,
+                                soldUnitsByProduct: soldUnitsByProduct,
+                                activeSort: _sortBy,
+                                isCashier: isCashier,
+                                onSelectSort: _selectSort,
+                              ),
+                          ],
+                        )
+                      : const SizedBox.shrink(),
                 ),
+              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                 child: Row(
@@ -1064,7 +1305,50 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
+                    PopupMenuButton<_ProductSort>(
+                      tooltip: strings.sortLabel,
+                      initialValue: _sortBy,
+                      onSelected: _selectSort,
+                      itemBuilder: (_) => [
+                        for (final option in [
+                          _ProductSort.newest,
+                          _ProductSort.priceDesc,
+                          _ProductSort.priceAsc,
+                          _ProductSort.stockDesc,
+                          _ProductSort.stockAsc,
+                          _ProductSort.mostSold,
+                          _ProductSort.nameAsc,
+                          if (!isCashier) _ProductSort.marginDesc,
+                        ])
+                          CheckedPopupMenuItem<_ProductSort>(
+                            value: option,
+                            checked: _sortBy == option,
+                            child: Text(_sortOptionLabel(option, strings)),
+                          ),
+                      ],
+                      child: Container(
+                        height: 44,
+                        width: 44,
+                        decoration: BoxDecoration(
+                          color: _sortBy != _ProductSort.newest
+                              ? Theme.of(context).colorScheme.primaryContainer
+                              : Theme.of(context)
+                                  .colorScheme
+                                  .secondaryContainer,
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                        child: Icon(
+                          Icons.swap_vert_rounded,
+                          color: _sortBy != _ProductSort.newest
+                              ? Theme.of(context).colorScheme.onPrimaryContainer
+                              : Theme.of(context)
+                                  .colorScheme
+                                  .onSecondaryContainer,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
                     IconButton.filledTonal(
                       tooltip: strings.scanBarcodeTitle,
                       onPressed: _openBarcodeLookup,
@@ -1073,7 +1357,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   ],
                 ),
               ),
-              SizedBox(
+              ClipRect(
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: showControls
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
                 height: 48,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
@@ -1158,6 +1451,18 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   children: [
+                    if (_sortBy != _ProductSort.newest)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: InputChip(
+                          avatar: const Icon(Icons.swap_vert_rounded, size: 16),
+                          label: Text(_sortOptionLabel(_sortBy, strings)),
+                          onDeleted: () =>
+                              setState(() => _sortBy = _ProductSort.newest),
+                          onPressed: () =>
+                              setState(() => _sortBy = _ProductSort.newest),
+                        ),
+                      ),
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: FilterChip(
@@ -1224,6 +1529,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   ],
                 ),
               ),
+                          ],
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
               const SizedBox(height: 4),
               Expanded(
                 child: widget.controller.products.isEmpty
@@ -1234,13 +1544,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       )
                     : products.isEmpty
                         ? Center(child: Text(strings.noGoodsMatch))
-                        : ListView.separated(
-                            padding: EdgeInsets.fromLTRB(
-                              16,
-                              8,
-                              16,
-                              88 + MediaQuery.viewInsetsOf(context).bottom,
-                            ),
+                        : NotificationListener<ScrollNotification>(
+                            onNotification: _handleScrollNotification,
+                            child: ListView.separated(
+                              controller: _listScrollController,
+                              padding: EdgeInsets.fromLTRB(
+                                16,
+                                8,
+                                16,
+                                (showControls ? 88 : 16) +
+                                    MediaQuery.viewInsetsOf(context).bottom,
+                              ),
                             itemCount: products.length,
                             separatorBuilder: (_, _) =>
                                 const SizedBox(height: 8),
@@ -1249,6 +1563,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               return _ProductCard(
                                 controller: widget.controller,
                                 product: product,
+                                soldUnits: _sortBy == _ProductSort.mostSold
+                                    ? (soldUnitsByProduct[product.id] ?? 0)
+                                    : null,
                                 isCashier: isCashier,
                                 selectionMode: _selectionMode,
                                 selected: _selectedIds.contains(product.id),
@@ -1268,6 +1585,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 onDuplicate: () =>
                                     _openProductForm(template: product),
                                 onHistory: () => _showProductHistory(product),
+                                onBarcodeLabel: () => _showBarcodeLabel(product),
                                 onAddToStockIn: () async {
                                   final messenger = ScaffoldMessenger.of(context);
                                   final totalQty = await widget.controller
@@ -1341,7 +1659,228 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               );
                             },
                           ),
+                          ),
               ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StockValueBreakdownSheet extends StatefulWidget {
+  const _StockValueBreakdownSheet({
+    required this.controller,
+    required this.onSelectCategory,
+  });
+
+  final ShopController controller;
+  final ValueChanged<String> onSelectCategory;
+
+  @override
+  State<_StockValueBreakdownSheet> createState() =>
+      _StockValueBreakdownSheetState();
+}
+
+class _StockValueBreakdownSheetState extends State<_StockValueBreakdownSheet> {
+  int _tab = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        final theme = Theme.of(context);
+        final strings = widget.controller.strings;
+        final currency = widget.controller.currency;
+        final products = widget.controller.products;
+        final snapshots = widget.controller.inventorySnapshots;
+        final totalCost = widget.controller.totalInventoryCostValue;
+        final totalSell = widget.controller.totalPotentialRevenue;
+
+        final costByCat = <String, double>{};
+        final sellByCat = <String, double>{};
+        for (final p in products) {
+          final cat = p.category.trim().isEmpty ? 'General' : p.category.trim();
+          costByCat[cat] = (costByCat[cat] ?? 0.0) + p.inventoryValue;
+          sellByCat[cat] = (sellByCat[cat] ?? 0.0) + p.potentialRevenue;
+        }
+        final sortedCats = costByCat.keys.toList()
+          ..sort((a, b) => (costByCat[b] ?? 0).compareTo(costByCat[a] ?? 0));
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                strings.stockValueLabel,
+                style: theme.textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${strings.costBasisLabel}: ${formatMoney(totalCost, currency)}  •  '
+                '${strings.sellValueLabel}: ${formatMoney(totalSell, currency)}',
+                style: theme.textTheme.bodySmall,
+              ),
+              Text(
+                '${strings.profitLabel}: ${formatMoney(totalSell - totalCost, currency)}',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<int>(
+                showSelectedIcon: false,
+                segments: [
+                  ButtonSegment(
+                    value: 0,
+                    label: Text(
+                      strings.byCategoriesTab,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  ButtonSegment(
+                    value: 1,
+                    label: Text(
+                      snapshots.isEmpty
+                          ? strings.byMonthsTab
+                          : '${strings.byMonthsTab} (${snapshots.length})',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+                selected: {_tab},
+                onSelectionChanged: (s) => setState(() => _tab = s.first),
+              ),
+              const SizedBox(height: 10),
+              if (_tab == 0)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 340),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: sortedCats.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (_, index) {
+                      final cat = sortedCats[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(cat),
+                        subtitle: Text(
+                          '${strings.sellValueLabel}: ${formatMoney(sellByCat[cat] ?? 0, currency)}',
+                        ),
+                        trailing: Text(
+                          formatMoney(costByCat[cat] ?? 0, currency),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        onTap: () => widget.onSelectCategory(cat),
+                      );
+                    },
+                  ),
+                )
+              else ...[
+                FilledButton.tonalIcon(
+                  onPressed: products.isEmpty
+                      ? null
+                      : () async {
+                          await widget.controller
+                              .captureMonthlyInventorySnapshot(
+                            forceUpdateCurrentMonth: true,
+                          );
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(strings.snapshotUpdatedMsg)),
+                          );
+                        },
+                  icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                  label: Text(strings.updateCurrentMonthSnapshotBtn),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  strings.snapshotAutoNote,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (snapshots.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    child: Text(
+                      strings.noMonthlySnapshotsMsg,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  )
+                else
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: snapshots.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (_, index) {
+                        final snap = snapshots[index];
+                        final prev = index + 1 < snapshots.length
+                            ? snapshots[index + 1]
+                            : null;
+                        String? deltaText;
+                        Color? deltaColor;
+                        if (prev != null) {
+                          final diff = snap.costValue - prev.costValue;
+                          if (diff.abs() > 0.009) {
+                            final sign = diff > 0 ? '+' : '−';
+                            final pctStr = prev.costValue > 0.009
+                                ? ' (${diff > 0 ? '+' : ''}${((diff / prev.costValue) * 100).toStringAsFixed(1)}%)'
+                                : '';
+                            deltaText =
+                                '$sign${formatMoney(diff.abs(), currency)}$pctStr';
+                            deltaColor = diff > 0
+                                ? Colors.green.shade700
+                                : theme.colorScheme.error;
+                          }
+                        }
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            '${strings.monthFull(snap.month)} ${snap.year}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            '${strings.snapshotItemsUnits(snap.productsCount, snap.totalUnits)} • '
+                            '${strings.sellValueLabel}: ${formatMoney(snap.sellValue, currency)}\n'
+                            '${strings.snapshotCapturedLabel(formatDateTime(snap.capturedAt))}',
+                          ),
+                          isThreeLine: true,
+                          trailing: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                formatMoney(snap.costValue, currency),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (deltaText != null)
+                                Text(
+                                  deltaText,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: deltaColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ],
           ),
         );
@@ -1463,10 +2002,197 @@ class _MetricTile extends StatelessWidget {
   }
 }
 
+class _InventoryHighlightsStrip extends StatelessWidget {
+  const _InventoryHighlightsStrip({
+    required this.controller,
+    required this.products,
+    required this.soldUnitsByProduct,
+    required this.activeSort,
+    required this.isCashier,
+    required this.onSelectSort,
+  });
+
+  final ShopController controller;
+  final List<Product> products;
+  final Map<String, int> soldUnitsByProduct;
+  final _ProductSort activeSort;
+  final bool isCashier;
+  final ValueChanged<_ProductSort> onSelectSort;
+
+  @override
+  Widget build(BuildContext context) {
+    if (products.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final strings = controller.strings;
+    final currency = controller.currency;
+
+    final latest = products.first;
+    Product mostExpensive = products.first;
+    Product? cheapestPositive;
+    Product cheapestAny = products.first;
+    Product mostStock = products.first;
+    Product? bestSeller;
+    int bestSellerQty = 0;
+    Product highestMargin = products.first;
+
+    for (final p in products) {
+      if (p.sellPrice > mostExpensive.sellPrice) mostExpensive = p;
+      if (p.sellPrice < cheapestAny.sellPrice) cheapestAny = p;
+      if (p.sellPrice > 0 &&
+          (cheapestPositive == null ||
+              p.sellPrice < cheapestPositive.sellPrice)) {
+        cheapestPositive = p;
+      }
+      if (p.stock > mostStock.stock) mostStock = p;
+      final sold = soldUnitsByProduct[p.id] ?? 0;
+      if (sold > bestSellerQty) {
+        bestSellerQty = sold;
+        bestSeller = p;
+      }
+      if (p.marginPercent > highestMargin.marginPercent) highestMargin = p;
+    }
+    final cheapest = cheapestPositive ?? cheapestAny;
+
+    final cards = <({
+      String title,
+      Product product,
+      String metric,
+      IconData icon,
+      Color tint,
+      _ProductSort sort,
+    })>[
+      (
+        title: strings.highlightLatestAdded,
+        product: latest,
+        metric: formatMoney(latest.sellPrice, currency),
+        icon: Icons.fiber_new_outlined,
+        tint: theme.colorScheme.primaryContainer,
+        sort: _ProductSort.newest,
+      ),
+      if (bestSeller != null)
+        (
+          title: strings.highlightBestSeller,
+          product: bestSeller,
+          metric: strings.soldUnitsBadge(bestSellerQty),
+          icon: Icons.local_fire_department_outlined,
+          tint: Colors.orange.shade100,
+          sort: _ProductSort.mostSold,
+        ),
+      (
+        title: strings.highlightMostExpensive,
+        product: mostExpensive,
+        metric: formatMoney(mostExpensive.sellPrice, currency),
+        icon: Icons.trending_up,
+        tint: theme.colorScheme.secondaryContainer,
+        sort: _ProductSort.priceDesc,
+      ),
+      (
+        title: strings.highlightCheapest,
+        product: cheapest,
+        metric: formatMoney(cheapest.sellPrice, currency),
+        icon: Icons.trending_down,
+        tint: theme.colorScheme.surfaceContainerHighest,
+        sort: _ProductSort.priceAsc,
+      ),
+      (
+        title: strings.highlightMostStock,
+        product: mostStock,
+        metric: strings.unitsCount(mostStock.stock),
+        icon: Icons.inventory_2_outlined,
+        tint: Colors.green.shade100,
+        sort: _ProductSort.stockDesc,
+      ),
+      if (!isCashier)
+        (
+          title: strings.highlightHighestMargin,
+          product: highestMargin,
+          metric: '${highestMargin.marginPercent.toStringAsFixed(0)}%',
+          icon: Icons.percent,
+          tint: theme.colorScheme.tertiaryContainer,
+          sort: _ProductSort.marginDesc,
+        ),
+    ];
+
+    return SizedBox(
+      height: 76,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+        itemCount: cards.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (_, index) {
+          final item = cards[index];
+          final isActive = activeSort == item.sort;
+          return Material(
+            color: item.tint.withValues(alpha: isActive ? 0.95 : 0.65),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: isActive
+                  ? BorderSide(color: theme.colorScheme.primary, width: 1.8)
+                  : BorderSide.none,
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => onSelectSort(item.sort),
+              child: SizedBox(
+                width: 162,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 7,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(item.icon, size: 14),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              item.title,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        item.product.name,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        item.metric,
+                        style: theme.textTheme.labelSmall,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _ProductCard extends StatelessWidget {
   const _ProductCard({
     required this.controller,
     required this.product,
+    this.soldUnits,
     required this.isCashier,
     this.selectionMode = false,
     this.selected = false,
@@ -1477,6 +2203,7 @@ class _ProductCard extends StatelessWidget {
     this.onQuickEdit,
     this.onDuplicate,
     this.onHistory,
+    this.onBarcodeLabel,
     this.onAddToStockIn,
     this.onAddToCart,
     required this.onMoveToGroup,
@@ -1486,6 +2213,7 @@ class _ProductCard extends StatelessWidget {
 
   final ShopController controller;
   final Product product;
+  final int? soldUnits;
   final bool isCashier;
   final bool selectionMode;
   final bool selected;
@@ -1496,6 +2224,7 @@ class _ProductCard extends StatelessWidget {
   final VoidCallback? onQuickEdit;
   final VoidCallback? onDuplicate;
   final VoidCallback? onHistory;
+  final VoidCallback? onBarcodeLabel;
   final VoidCallback? onAddToStockIn;
   final VoidCallback? onAddToCart;
   final VoidCallback onMoveToGroup;
@@ -1510,12 +2239,17 @@ class _ProductCard extends StatelessWidget {
     final Color badgeColor;
     final String stockLabel;
 
+    final oosDays = product.currentOutOfStockDays;
     if (product.stock < 0) {
       badgeColor = theme.colorScheme.errorContainer;
-      stockLabel = '${strings.outOfStock} (${product.stock})';
+      stockLabel = oosDays > 0
+          ? '${strings.outOfStock} (${product.stock}) • ${strings.daysShort(oosDays)}'
+          : '${strings.outOfStock} (${product.stock})';
     } else if (product.isOutOfStock) {
       badgeColor = theme.colorScheme.errorContainer;
-      stockLabel = strings.outOfStock;
+      stockLabel = oosDays > 0
+          ? '${strings.outOfStock} • ${strings.daysShort(oosDays)}'
+          : strings.outOfStock;
     } else if (product.isLowStock) {
       badgeColor = Colors.amber.shade100;
       stockLabel = strings.lowStockBadge(product.stock);
@@ -1603,21 +2337,37 @@ class _ProductCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: badgeColor,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    stockLabel,
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: badgeColor,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        stockLabel,
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
-                  ),
+                    if (soldUnits != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          strings.soldUnitsBadge(soldUnits!),
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -1628,7 +2378,9 @@ class _ProductCard extends StatelessWidget {
                   child: Text(
                     isCashier
                         ? '${strings.sellShort}: ${formatMoney(product.sellPrice, currency)}'
-                        : '${strings.sellShort}: ${formatMoney(product.sellPrice, currency)}  •  '
+                            '${product.hasWholesalePrice ? '  •  ${strings.wholesaleShort}: ${formatMoney(product.wholesalePrice, currency)}' : ''}'
+                        : '${strings.sellShort}: ${formatMoney(product.sellPrice, currency)}'
+                            '${product.hasWholesalePrice ? '  •  ${strings.wholesaleShort}: ${formatMoney(product.wholesalePrice, currency)}' : ''}  •  '
                             '${strings.costShort}: ${formatMoney(product.costPrice, currency)}  •  '
                             '${strings.marginShort}: ${product.marginPercent.toStringAsFixed(0)}%',
                     style: theme.textTheme.bodySmall,
@@ -1659,6 +2411,7 @@ class _ProductCard extends StatelessWidget {
                       if (value == 'edit') onEdit();
                       if (value == 'duplicate') onDuplicate?.call();
                       if (value == 'history') onHistory?.call();
+                      if (value == 'barcode') onBarcodeLabel?.call();
                       if (value == 'move_group') onMoveToGroup();
                       if (value == 'archive') onArchive();
                       if (value == 'trash') onMoveToTrash();
@@ -1676,6 +2429,10 @@ class _ProductCard extends StatelessWidget {
                       PopupMenuItem(
                         value: 'duplicate',
                         child: Text(strings.duplicateAction),
+                      ),
+                      PopupMenuItem(
+                        value: 'barcode',
+                        child: Text(strings.barcodeLabelAction),
                       ),
                       PopupMenuItem(
                         value: 'history',
@@ -1946,11 +2703,18 @@ class _NewGroupDialogState extends State<_NewGroupDialog> {
 }
 
 class _QuickEditResult {
-  const _QuickEditResult({this.openFullForm = false, this.sellPrice = 0, this.costPrice = 0, this.stock = 0});
+  const _QuickEditResult({
+    this.openFullForm = false,
+    this.sellPrice = 0,
+    this.costPrice = 0,
+    this.wholesalePrice = 0,
+    this.stock = 0,
+  });
 
   final bool openFullForm;
   final double sellPrice;
   final double costPrice;
+  final double wholesalePrice;
   final int stock;
 }
 
@@ -1972,6 +2736,7 @@ class _QuickEditProductDialog extends StatefulWidget {
 class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
   late final TextEditingController _sellCtrl;
   late final TextEditingController _costCtrl;
+  late final TextEditingController _wholesaleCtrl;
   late final TextEditingController _stockCtrl;
 
   @override
@@ -1983,6 +2748,11 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
     _costCtrl = TextEditingController(
       text: widget.product.costPrice.toStringAsFixed(0),
     );
+    _wholesaleCtrl = TextEditingController(
+      text: widget.product.wholesalePrice > 0
+          ? widget.product.wholesalePrice.toStringAsFixed(0)
+          : '',
+    );
     _stockCtrl = TextEditingController(text: '${widget.product.stock}');
   }
 
@@ -1990,6 +2760,7 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
   void dispose() {
     _sellCtrl.dispose();
     _costCtrl.dispose();
+    _wholesaleCtrl.dispose();
     _stockCtrl.dispose();
     super.dispose();
   }
@@ -2022,12 +2793,27 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
   void _save() {
     final sell = double.tryParse(_sellCtrl.text.trim().replaceAll(',', '.'));
     final cost = double.tryParse(_costCtrl.text.trim().replaceAll(',', '.'));
+    final wholesaleRaw = _wholesaleCtrl.text.trim().replaceAll(',', '.');
+    final wholesale =
+        wholesaleRaw.isEmpty ? 0.0 : double.tryParse(wholesaleRaw);
     final stock = int.tryParse(_stockCtrl.text.trim());
-    if (sell == null || sell < 0 || cost == null || cost < 0 || stock == null || stock < 0) {
+    if (sell == null ||
+        sell < 0 ||
+        cost == null ||
+        cost < 0 ||
+        wholesale == null ||
+        wholesale < 0 ||
+        stock == null ||
+        stock < 0) {
       return;
     }
     Navigator.of(context).pop(
-      _QuickEditResult(sellPrice: sell, costPrice: cost, stock: stock),
+      _QuickEditResult(
+        sellPrice: sell,
+        costPrice: cost,
+        wholesalePrice: wholesale,
+        stock: stock,
+      ),
     );
   }
 
@@ -2097,51 +2883,71 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
               ],
             ),
             const SizedBox(height: 10),
-            TextField(
-              controller: _stockCtrl,
-              textInputAction: TextInputAction.done,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: strings.stockQtyRequired,
-                border: const OutlineInputBorder(),
-                isDense: true,
-                suffixIcon: IconButton(
-                  tooltip: strings.currencyCalculatorTitle,
-                  onPressed: () => _openCalculator(_stockCtrl, integerMode: true),
-                  icon: const Icon(Icons.calculate_outlined, size: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _wholesaleCtrl,
+                    textInputAction: TextInputAction.next,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: strings.wholesaleShort,
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                      suffixIcon: IconButton(
+                        tooltip: strings.currencyCalculatorTitle,
+                        onPressed: () => _openCalculator(_wholesaleCtrl),
+                        icon: const Icon(Icons.calculate_outlined, size: 18),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-              onSubmitted: (_) => _save(),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _stockCtrl,
+                    textInputAction: TextInputAction.done,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: strings.stockQtyRequired,
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                      suffixIcon: IconButton(
+                        tooltip: strings.currencyCalculatorTitle,
+                        onPressed: () =>
+                            _openCalculator(_stockCtrl, integerMode: true),
+                        icon: const Icon(Icons.calculate_outlined, size: 18),
+                      ),
+                    ),
+                    onSubmitted: (_) => _save(),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
       actions: [
-        Row(
-          children: [
-            TextButton(
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-              ),
-              onPressed: () => Navigator.of(context).pop(
-                const _QuickEditResult(openFullForm: true),
-              ),
-              child: Text(strings.allFieldsAction),
-            ),
-            const Spacer(),
-            TextButton(
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-              ),
-              onPressed: () => Navigator.of(context).pop(),
-              child: Text(strings.cancel),
-            ),
-            const SizedBox(width: 4),
-            FilledButton(
-              onPressed: _save,
-              child: Text(strings.saveChanges),
-            ),
-          ],
+        TextButton(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+          ),
+          onPressed: () => Navigator.of(context).pop(
+            const _QuickEditResult(openFullForm: true),
+          ),
+          child: Text(strings.allFieldsAction),
+        ),
+        TextButton(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+          ),
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(strings.cancel),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: Text(strings.saveChanges),
         ),
       ],
     );
@@ -2157,13 +2963,40 @@ class _ProductHistorySheet extends StatelessWidget {
   final ShopController controller;
   final Product product;
 
+  String? _formatPriceDelta(String oldVal, String newVal) {
+    final oldNum = double.tryParse(oldVal.replaceAll(',', '.').trim());
+    final newNum = double.tryParse(newVal.replaceAll(',', '.').trim());
+    if (oldNum == null || newNum == null) return null;
+    final delta = newNum - oldNum;
+    if (delta.abs() <= 0.009) return null;
+    final sign = delta > 0 ? '+' : '−';
+    final absStr = delta.abs() == delta.abs().roundToDouble()
+        ? delta.abs().toStringAsFixed(0)
+        : delta.abs().toStringAsFixed(2);
+    if (oldNum > 0.009) {
+      final pct = (delta / oldNum) * 100;
+      final pctStr = pct.abs() >= 10
+          ? pct.toStringAsFixed(0)
+          : pct.toStringAsFixed(1);
+      return '$sign$absStr (${delta > 0 ? '+' : ''}$pctStr%)';
+    }
+    return '$sign$absStr';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final strings = controller.strings;
     final currency = controller.currency;
+    final priceHistory = controller.priceChangesForProduct(product.id);
 
-    final incoming = <({DateTime date, String supplier, int qty, double cost})>[];
+    final incoming = <({
+      DateTime date,
+      String supplier,
+      String rateLabel,
+      int qty,
+      double cost,
+    })>[];
     var totalInUnits = 0;
     var totalInSpend = 0.0;
     for (final rec in controller.stockIns) {
@@ -2172,6 +3005,7 @@ class _ProductHistorySheet extends StatelessWidget {
           incoming.add((
             date: rec.createdAt,
             supplier: rec.supplierName,
+            rateLabel: rec.exchangeRateLabel,
             qty: item.quantity,
             cost: item.unitCost,
           ));
@@ -2181,9 +3015,18 @@ class _ProductHistorySheet extends StatelessWidget {
       }
     }
 
-    final outgoing = <({DateTime date, String customer, int qty, double price})>[];
+    final outgoing = <({
+      DateTime date,
+      String customer,
+      int qty,
+      double price,
+      double cost,
+      double profit,
+    })>[];
     var totalOutUnits = 0;
     var totalOutRev = 0.0;
+    var totalOutProfit = 0.0;
+    final isCashier = controller.cashierMode;
     for (final sale in controller.sales) {
       for (final item in sale.items) {
         if (item.productId == product.id && item.quantity > 0) {
@@ -2192,9 +3035,12 @@ class _ProductHistorySheet extends StatelessWidget {
             customer: sale.customerName,
             qty: item.quantity,
             price: item.unitPrice,
+            cost: item.unitCost,
+            profit: item.lineProfit,
           ));
           totalOutUnits += item.quantity;
           totalOutRev += item.lineTotal;
+          totalOutProfit += item.lineProfit;
         }
       }
     }
@@ -2213,22 +3059,131 @@ class _ProductHistorySheet extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            '${strings.stockInBtn}: ${strings.unitsShort(totalInUnits)} (${formatMoney(totalInSpend, currency)})  •  ${strings.salesHistoryHeader}: ${strings.unitsShort(totalOutUnits)} (${formatMoney(totalOutRev, currency)})',
+            '${strings.stockInBtn}: ${strings.unitsShort(totalInUnits)} (${formatMoney(totalInSpend, currency)})  •  '
+            '${strings.salesHistoryHeader}: ${strings.unitsShort(totalOutUnits)} (${formatMoney(totalOutRev, currency)}'
+            '${!isCashier && totalOutUnits > 0 ? ', ${strings.profitLabel}: ${totalOutProfit >= 0 ? '+' : ''}${formatMoney(totalOutProfit, currency)}' : ''})',
             style: theme.textTheme.bodySmall,
           ),
+          if (product.isOutOfStock || product.totalOutOfStockDays > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                strings.oosSummaryLine(
+                  product.currentOutOfStockDays,
+                  product.cumulativeOutOfStockDays,
+                ),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: product.isOutOfStock
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           const SizedBox(height: 12),
-          if (incoming.isEmpty && outgoing.isEmpty)
+          if (priceHistory.isEmpty && incoming.isEmpty && outgoing.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 24),
               child: Center(child: Text(strings.noProductHistoryMsg)),
             )
           else
             ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 420),
+              constraints: const BoxConstraints(maxHeight: 460),
               child: SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    if (priceHistory.isNotEmpty) ...[
+                      Text(
+                        '${strings.priceHistory5YearsHeader} (${priceHistory.length})',
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      for (final entry in priceHistory)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surfaceContainerLow,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        formatDateTime(entry.createdAt),
+                                        style: theme.textTheme.labelSmall
+                                            ?.copyWith(
+                                          color: theme
+                                              .colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ),
+                                    Text(
+                                      strings.changeSourceLabel(entry.source),
+                                      style: theme.textTheme.labelSmall,
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                for (final f in entry.fields
+                                    .where((x) => x.kind == 'price'))
+                                  Builder(
+                                    builder: (_) {
+                                      final deltaStr = _formatPriceDelta(
+                                        f.oldValue,
+                                        f.newValue,
+                                      );
+                                      final isUp = deltaStr != null &&
+                                          deltaStr.startsWith('+');
+                                      return Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 2,
+                                        ),
+                                        child: Wrap(
+                                          spacing: 6,
+                                          crossAxisAlignment:
+                                              WrapCrossAlignment.center,
+                                          children: [
+                                            Text(
+                                              '${f.label}: ${f.oldValue} → ${f.newValue}',
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            if (deltaStr != null)
+                                              Text(
+                                                deltaStr,
+                                                style: theme
+                                                    .textTheme.labelSmall
+                                                    ?.copyWith(
+                                                  color: isUp
+                                                      ? Colors.green.shade700
+                                                      : theme.colorScheme.error,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 10),
+                    ],
                     if (incoming.isNotEmpty) ...[
                       Text(
                         '${strings.stockInsHeader} (${incoming.length})',
@@ -2247,7 +3202,11 @@ class _ProductHistorySheet extends StatelessWidget {
                                 ? e.supplier.trim()
                                 : strings.stockInBtn,
                           ),
-                          subtitle: Text(formatDateTime(e.date)),
+                          subtitle: Text(
+                            e.rateLabel.isNotEmpty
+                                ? '${formatDateTime(e.date)} • ${e.rateLabel}'
+                                : formatDateTime(e.date),
+                          ),
                           trailing: Text(
                             '+${e.qty} × ${formatMoney(e.cost, currency)}',
                             style: const TextStyle(fontWeight: FontWeight.w600),
@@ -2273,7 +3232,11 @@ class _ProductHistorySheet extends StatelessWidget {
                                 ? s.customer.trim()
                                 : strings.saleReceipt,
                           ),
-                          subtitle: Text(formatDateTime(s.date)),
+                          subtitle: Text(
+                            isCashier
+                                ? formatDateTime(s.date)
+                                : '${formatDateTime(s.date)} • ${strings.costShort}: ${formatMoney(s.cost, currency)} • ${s.profit >= 0 ? '+' : ''}${formatMoney(s.profit, currency)}',
+                          ),
                           trailing: Text(
                             '-${s.qty} × ${formatMoney(s.price, currency)}',
                             style: const TextStyle(fontWeight: FontWeight.w600),
@@ -2340,6 +3303,7 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
     if (f.key.isNotEmpty) return f.key;
     if (f.label == strings.sellShort) return 'sellPrice';
     if (f.label == strings.costShort) return 'costPrice';
+    if (f.label == strings.wholesaleShort) return 'wholesalePrice';
     if (f.kind == 'stock') return 'stock';
     if (f.kind == 'weight') return 'unitWeight';
     if (f.label == strings.categoryLabel) return 'category';
@@ -2367,6 +3331,8 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
         return _fmtNum(product.sellPrice);
       case 'costPrice':
         return _fmtNum(product.costPrice);
+      case 'wholesalePrice':
+        return _fmtNum(product.wholesalePrice);
       case 'stock':
         return '${product.stock}';
       case 'unitWeight':
@@ -2541,6 +3507,10 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
           SimpleDialogOption(
             onPressed: () => Navigator.of(ctx).pop(730),
             child: Text(strings.period2Years),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(1827),
+            child: Text(strings.period5Years),
           ),
         ],
       ),
@@ -3040,6 +4010,149 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
           ],
         ),
       ),
+    );
+  }
+}
+
+class _LocalDuplicatesSheet extends StatelessWidget {
+  const _LocalDuplicatesSheet({
+    required this.controller,
+    required this.onEditProduct,
+  });
+
+  final ShopController controller;
+  final ValueChanged<Product> onEditProduct;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final strings = controller.strings;
+        final currency = controller.currency;
+        final groups = controller.findLocalDuplicateGroups();
+
+        return SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.80,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        strings.phoneDuplicatesCount(groups.length),
+                        style: theme.textTheme.titleLarge,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: strings.close,
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: groups.isEmpty
+                      ? Center(child: Text(strings.noDuplicatesFoundMsg))
+                      : ListView.separated(
+                          itemCount: groups.length,
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (_, index) {
+                            final group = groups[index];
+                            return Card(
+                              margin: EdgeInsets.zero,
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      group.reason,
+                                      style:
+                                          theme.textTheme.titleSmall?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: theme.colorScheme.error,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    for (final product in group.products)
+                                      ListTile(
+                                        dense: true,
+                                        contentPadding: EdgeInsets.zero,
+                                        title: Text(product.name),
+                                        subtitle: Text(
+                                          [
+                                            product.category,
+                                            if (product.sku.isNotEmpty)
+                                              'SKU: ${product.sku}',
+                                            formatMoney(
+                                              product.sellPrice,
+                                              currency,
+                                            ),
+                                            strings.stockCountLabel(
+                                              product.stock,
+                                            ),
+                                          ].join(' • '),
+                                        ),
+                                        trailing: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                              tooltip: strings.edit,
+                                              icon: const Icon(
+                                                Icons.edit_outlined,
+                                                size: 20,
+                                              ),
+                                              onPressed: () =>
+                                                  onEditProduct(product),
+                                            ),
+                                            IconButton(
+                                              tooltip:
+                                                  strings.moveToTrashAction,
+                                              icon: Icon(
+                                                Icons.delete_outline,
+                                                size: 20,
+                                                color: theme.colorScheme.error,
+                                              ),
+                                              onPressed: () async {
+                                                await controller
+                                                    .moveProductToTrash(
+                                                  product.id,
+                                                );
+                                                if (context.mounted) {
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        strings
+                                                            .movedToTrashMsg,
+                                                      ),
+                                                    ),
+                                                  );
+                                                }
+                                              },
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

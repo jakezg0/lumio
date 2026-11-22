@@ -74,6 +74,7 @@ class DefectWriteOffItem {
     required this.productName,
     required this.quantity,
     required this.unitCost,
+    this.reason = '',
     required this.createdAt,
   });
 
@@ -81,6 +82,7 @@ class DefectWriteOffItem {
   final String productName;
   final int quantity;
   final double unitCost;
+  final String reason;
   final DateTime createdAt;
 
   double get lineCost => unitCost * quantity;
@@ -91,6 +93,7 @@ class DefectWriteOffItem {
       'productName': productName,
       'quantity': quantity,
       'unitCost': unitCost,
+      if (reason.isNotEmpty) 'reason': reason,
       'createdAt': createdAt.toIso8601String(),
     };
   }
@@ -101,6 +104,7 @@ class DefectWriteOffItem {
       productName: json['productName'] as String,
       quantity: (json['quantity'] as num).toInt(),
       unitCost: (json['unitCost'] as num).toDouble(),
+      reason: (json['reason'] as String?) ?? '',
       createdAt: DateTime.parse(json['createdAt'] as String),
     );
   }
@@ -172,6 +176,7 @@ class Sale {
     this.customerName = '',
     this.customerPhone = '',
     this.discount = 0,
+    this.discountReason = '',
     this._paidAmount,
     this.dueDate,
     this.paidAt,
@@ -181,6 +186,7 @@ class Sale {
     this.refundedAmount = 0,
     this.returnedMoneyTotal = 0,
     this.refundNote = '',
+    this.returnReason = '',
     this.archivedAt,
     this.trashedAt,
     required this.createdAt,
@@ -194,6 +200,7 @@ class Sale {
   final String customerName;
   final String customerPhone;
   final double discount;
+  final String discountReason;
   final double? _paidAmount;
   final DateTime? dueDate;
   final DateTime? paidAt;
@@ -203,6 +210,7 @@ class Sale {
   final double refundedAmount;
   final double returnedMoneyTotal;
   final String refundNote;
+  final String returnReason;
   final DateTime? archivedAt;
   final DateTime? trashedAt;
   final DateTime createdAt;
@@ -271,6 +279,7 @@ class Sale {
     String? customerName,
     String? customerPhone,
     double? discount,
+    String? discountReason,
     double? paidAmount,
     DateTime? dueDate,
     DateTime? paidAt,
@@ -281,6 +290,7 @@ class Sale {
     double? refundedAmount,
     double? returnedMoneyTotal,
     String? refundNote,
+    String? returnReason,
     DateTime? archivedAt,
     bool clearArchivedAt = false,
     DateTime? trashedAt,
@@ -298,6 +308,7 @@ class Sale {
       customerName: customerName ?? this.customerName,
       customerPhone: customerPhone ?? this.customerPhone,
       discount: discount ?? this.discount,
+      discountReason: discountReason ?? this.discountReason,
       paidAmount: paidAmount ?? this.paidAmount,
       dueDate: dueDate ?? this.dueDate,
       paidAt: clearPaidAt ? null : (paidAt ?? this.paidAt),
@@ -307,6 +318,7 @@ class Sale {
       refundedAmount: refundedAmount ?? this.refundedAmount,
       returnedMoneyTotal: returnedMoneyTotal ?? this.returnedMoneyTotal,
       refundNote: refundNote ?? this.refundNote,
+      returnReason: returnReason ?? this.returnReason,
       archivedAt: clearArchivedAt ? null : (archivedAt ?? this.archivedAt),
       trashedAt: clearTrashedAt ? null : (trashedAt ?? this.trashedAt),
       createdAt: createdAt ?? this.createdAt,
@@ -324,6 +336,7 @@ class Sale {
       'customerName': customerName,
       if (customerPhone.isNotEmpty) 'customerPhone': customerPhone,
       'discount': discount,
+      if (discountReason.isNotEmpty) 'discountReason': discountReason,
       'paidAmount': paidAmount,
       'dueDate': dueDate?.toIso8601String(),
       'paidAt': paidAt?.toIso8601String(),
@@ -335,6 +348,7 @@ class Sale {
       if (refundedAmount > 0) 'refundedAmount': refundedAmount,
       if (returnedMoneyTotal > 0) 'returnedMoneyTotal': returnedMoneyTotal,
       if (refundNote.isNotEmpty) 'refundNote': refundNote,
+      if (returnReason.isNotEmpty) 'returnReason': returnReason,
       'archivedAt': archivedAt?.toIso8601String(),
       'trashedAt': trashedAt?.toIso8601String(),
       'createdAt': createdAt.toIso8601String(),
@@ -364,6 +378,7 @@ class Sale {
       customerName: (json['customerName'] as String?) ?? '',
       customerPhone: (json['customerPhone'] as String?) ?? '',
       discount: (json['discount'] as num?)?.toDouble() ?? 0,
+      discountReason: (json['discountReason'] as String?) ?? '',
       paidAmount: (json['paidAmount'] as num?)?.toDouble(),
       dueDate: dueDateRaw != null ? DateTime.tryParse(dueDateRaw) : null,
       paidAt: paidAtRaw != null ? DateTime.tryParse(paidAtRaw) : null,
@@ -380,6 +395,7 @@ class Sale {
       returnedMoneyTotal:
           (json['returnedMoneyTotal'] as num?)?.toDouble() ?? 0,
       refundNote: (json['refundNote'] as String?) ?? '',
+      returnReason: (json['returnReason'] as String?) ?? '',
       archivedAt: archivedRaw != null ? DateTime.tryParse(archivedRaw) : null,
       trashedAt: trashedRaw != null ? DateTime.tryParse(trashedRaw) : null,
       createdAt: DateTime.parse(json['createdAt'] as String),

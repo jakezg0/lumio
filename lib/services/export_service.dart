@@ -30,7 +30,7 @@ class ExportService {
   static String buildProductsCsv(List<Product> products) {
     final buffer = StringBuffer();
     buffer.writeln(
-      'ID,Name,Category,Nomenclature,PrintName,PackQty,BoxQty,SKU,PackBarcode,BoxBarcode,UnitWeight,Unit,CostPrice,SellPrice,Stock,LowStockThreshold,UpdatedAt',
+      'ID,Name,Category,Nomenclature,PrintName,PackQty,BoxQty,SKU,PackBarcode,BoxBarcode,UnitWeight,Unit,CostPrice,SellPrice,WholesalePrice,Stock,LowStockThreshold,UpdatedAt',
     );
     for (final p in products) {
       buffer.writeln(
@@ -49,6 +49,7 @@ class ExportService {
           _csvEscape(p.unit),
           p.costPrice.toStringAsFixed(2),
           p.sellPrice.toStringAsFixed(2),
+          p.wholesalePrice > 0 ? p.wholesalePrice.toStringAsFixed(2) : '',
           '${p.stock}',
           '${p.lowStockThreshold}',
           p.updatedAt.toIso8601String(),
@@ -74,6 +75,7 @@ class ExportService {
         'Штрихкод (SKU)',
         'Закуп',
         'Цена',
+        'Опт',
         'Остаток',
         'Порог',
         'Маржа %',
@@ -97,6 +99,11 @@ class ExportService {
           p.sellPrice == p.sellPrice.roundToDouble()
               ? p.sellPrice.toStringAsFixed(0)
               : p.sellPrice.toStringAsFixed(2),
+          p.wholesalePrice > 0
+              ? (p.wholesalePrice == p.wholesalePrice.roundToDouble()
+                  ? p.wholesalePrice.toStringAsFixed(0)
+                  : p.wholesalePrice.toStringAsFixed(2))
+              : '',
           '${p.stock}',
           '${p.lowStockThreshold}',
           p.marginPercent.toStringAsFixed(1),
@@ -117,7 +124,7 @@ class ExportService {
   static String buildProductsReadableCsvWithBom(List<Product> products) {
     final buffer = StringBuffer('\uFEFF');
     buffer.writeln(
-      'Название;Категория;Штрихкод (SKU);Закуп;Цена;Остаток;Порог;Маржа %;Сумма закупа;Упаковка;Коробка;Штрихкод упаковки;Штрихкод коробки;ID',
+      'Название;Категория;Штрихкод (SKU);Закуп;Цена;Опт;Остаток;Порог;Маржа %;Сумма закупа;Упаковка;Коробка;Штрихкод упаковки;Штрихкод коробки;ID',
     );
     for (final p in products) {
       String numStr(double v) =>
@@ -129,6 +136,7 @@ class ExportService {
           _csvEscape(p.sku),
           numStr(p.costPrice),
           numStr(p.sellPrice),
+          p.wholesalePrice > 0 ? numStr(p.wholesalePrice) : '',
           '${p.stock}',
           '${p.lowStockThreshold}',
           p.marginPercent.toStringAsFixed(1),
@@ -147,10 +155,10 @@ class ExportService {
   static String buildImportTemplateTsv() {
     final buffer = StringBuffer();
     buffer.writeln(
-      'Название\tКатегория\tШтрихкод (SKU)\tЗакуп\tЦена\tОстаток\tПорог',
+      'Название\tКатегория\tШтрихкод (SKU)\tЗакуп\tЦена\tОпт\tОстаток\tПорог',
     );
-    buffer.writeln('Угол наружный 70мм Белый\tПлинтусы\t4601234567890\t200\t320\t50\t5');
-    buffer.writeln('Соединитель 85мм Белый\tКомплектующие\t4601234567891\t220\t350\t30\t5');
+    buffer.writeln('Угол наружный 70мм Белый\tПлинтусы\t4601234567890\t200\t320\t280\t50\t5');
+    buffer.writeln('Соединитель 85мм Белый\tКомплектующие\t4601234567891\t220\t350\t300\t30\t5');
     return buffer.toString();
   }
 
@@ -227,6 +235,7 @@ class ExportService {
       if (k == 'category' || k.contains('катег') || k.contains('санат') || k == 'группа') return 'category';
       if (k == 'sku' || k.contains('штрихкод (sku)') || k == 'штрихкод' || k == 'артикул') return 'sku';
       if (k == 'costprice' || k == 'cost' || k.contains('закуп') || k.contains('себест') || k.contains('сатып')) return 'costPrice';
+      if (k == 'wholesaleprice' || k == 'wholesale' || k == 'опт' || k.contains('оптов') || k.contains('көтерме')) return 'wholesalePrice';
       if (k == 'sellprice' || k == 'price' || k == 'цена' || k.contains('цена прод') || k.contains('сату')) return 'sellPrice';
       if (k == 'stock' || k.contains('остаток') || k.contains('колич') || k.contains('қалдық')) return 'stock';
       if (k == 'lowstockthreshold' || k.contains('порог') || k.contains('шек')) return 'lowStockThreshold';
@@ -279,6 +288,8 @@ class ExportService {
           boxBarcode: (map['boxBarcode'] ?? '').trim(),
           costPrice: parseNum(map['costPrice']).clamp(0.0, double.infinity),
           sellPrice: parseNum(map['sellPrice']).clamp(0.0, double.infinity),
+          wholesalePrice:
+              parseNum(map['wholesalePrice']).clamp(0.0, double.infinity),
           stock: parseIntVal(map['stock']).clamp(0, 9999999),
           lowStockThreshold: parseIntVal(map['lowStockThreshold'], fallback: 5).clamp(0, 999999),
           updatedAt: now,
@@ -291,11 +302,14 @@ class ExportService {
   static String buildSalesCsv(List<Sale> sales) {
     final buffer = StringBuffer();
     buffer.writeln(
-      'ID,CreatedAt,Customer,PaymentMethod,Items,Subtotal,Discount,Total,PaidAmount,RemainingDebt,Profit',
+      'ID,CreatedAt,Customer,PaymentMethod,Items,Subtotal,Discount,Total,TotalCost,PaidAmount,RemainingDebt,Profit',
     );
     for (final s in sales) {
       final itemsSummary = s.items
-          .map((i) => '${i.productName} x${i.quantity}')
+          .map(
+            (i) =>
+                '${i.productName} x${i.quantity} (sell:${i.unitPrice.toStringAsFixed(0)} cost:${i.unitCost.toStringAsFixed(0)})',
+          )
           .join('; ');
       buffer.writeln(
         [
@@ -307,6 +321,7 @@ class ExportService {
           s.subtotal.toStringAsFixed(2),
           s.discount.toStringAsFixed(2),
           s.total.toStringAsFixed(2),
+          s.totalCost.toStringAsFixed(2),
           s.paidAmount.toStringAsFixed(2),
           s.remainingDebt.toStringAsFixed(2),
           s.profit.toStringAsFixed(2),
@@ -334,6 +349,13 @@ class ExportService {
       'expenses': snapshot.expenses.map((e) => e.toJson()).toList(),
       'customers': snapshot.customers.map((c) => c.toJson()).toList(),
       'stockIns': snapshot.stockIns.map((s) => s.toJson()).toList(),
+      if (snapshot.inventorySnapshots.isNotEmpty)
+        'inventorySnapshots':
+            snapshot.inventorySnapshots.map((s) => s.toJson()).toList(),
+      if (snapshot.featureUsage.isNotEmpty)
+        'featureUsage': snapshot.featureUsage.map(
+          (k, v) => MapEntry(k, v.toJson()),
+        ),
     });
   }
 
@@ -344,6 +366,18 @@ class ExportService {
     final rawExpenses = decoded['expenses'] as List<dynamic>? ?? const [];
     final rawCustomers = decoded['customers'] as List<dynamic>? ?? const [];
     final rawStockIns = decoded['stockIns'] as List<dynamic>? ?? const [];
+    final rawSnapshots =
+        decoded['inventorySnapshots'] as List<dynamic>? ?? const [];
+    final rawFeatureUsage =
+        decoded['featureUsage'] as Map<String, dynamic>? ?? const {};
+    final parsedFeatureUsage = <String, FeatureUsageStat>{};
+    for (final entry in rawFeatureUsage.entries) {
+      if (entry.value is Map<String, dynamic>) {
+        final stat =
+            FeatureUsageStat.fromJson(entry.value as Map<String, dynamic>);
+        if (stat.count > 0) parsedFeatureUsage[entry.key] = stat;
+      }
+    }
 
     return ShopDataSnapshot(
       products: rawProducts
@@ -370,6 +404,11 @@ class ExportService {
       ownerPin: (decoded['ownerPin'] as String?) ?? '',
       useBiometricUnlock: (decoded['useBiometricUnlock'] as bool?) ?? false,
       cashierMode: (decoded['cashierMode'] as bool?) ?? true,
+      inventorySnapshots: rawSnapshots
+          .whereType<Map<String, dynamic>>()
+          .map(InventoryValueSnapshot.fromJson)
+          .toList(),
+      featureUsage: parsedFeatureUsage,
     );
   }
 
@@ -808,6 +847,174 @@ class ExportService {
     final file = File('${baseDir.path}/stockin_${record.id}.pdf');
     await file.writeAsBytes(bytes);
     return file.path;
+  }
+
+  static bool _isValidEan13(String raw) {
+    final code = raw.trim();
+    if (code.length != 13) return false;
+    var sum = 0;
+    for (var i = 0; i < 13; i++) {
+      final c = code.codeUnitAt(i);
+      if (c < 48 || c > 57) return false;
+      if (i < 12) {
+        final d = c - 48;
+        sum += i.isEven ? d : d * 3;
+      }
+    }
+    return ((10 - (sum % 10)) % 10) == (code.codeUnitAt(12) - 48);
+  }
+
+  static Future<Uint8List> buildBarcodeLabelsPdfBytes({
+    required Product product,
+    required String code,
+    required AppCurrency currency,
+    required bool isThermal58x40,
+    required int copies,
+    bool showPrice = true,
+    String shopName = '',
+  }) async {
+    final cleanCode = code.trim();
+    final safeCopies = copies.clamp(1, 120);
+    final unicodeFont = await _loadSystemUnicodeFont();
+    final theme = unicodeFont != null
+        ? pw.ThemeData.withFont(base: unicodeFont, bold: unicodeFont)
+        : pw.ThemeData.base();
+
+    final displayName = product.printName.trim().isNotEmpty
+        ? product.printName.trim()
+        : product.name.trim();
+    final priceText = formatMoney(product.sellPrice, currency);
+    final barcodeType =
+        _isValidEan13(cleanCode) ? pw.Barcode.ean13() : pw.Barcode.code128();
+
+    pw.Widget buildSingleLabel({
+      required double barcodeWidth,
+      required double barcodeHeight,
+      required double titleFontSize,
+      required double priceFontSize,
+      required double shopFontSize,
+      bool withBorder = false,
+    }) {
+      return pw.Container(
+        padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+        decoration: withBorder
+            ? pw.BoxDecoration(
+                border: pw.Border.all(color: PdfColors.grey400, width: 0.5),
+              )
+            : null,
+        child: pw.Column(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            if (shopName.trim().isNotEmpty)
+              pw.Text(
+                shopName.trim(),
+                maxLines: 1,
+                style: pw.TextStyle(
+                  fontSize: shopFontSize,
+                  color: PdfColors.grey700,
+                ),
+                textAlign: pw.TextAlign.center,
+              ),
+            pw.Text(
+              displayName,
+              maxLines: 2,
+              style: pw.TextStyle(
+                fontSize: titleFontSize,
+                fontWeight: pw.FontWeight.bold,
+              ),
+              textAlign: pw.TextAlign.center,
+            ),
+            if (showPrice)
+              pw.Text(
+                priceText,
+                style: pw.TextStyle(
+                  fontSize: priceFontSize,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+                textAlign: pw.TextAlign.center,
+              ),
+            pw.BarcodeWidget(
+              barcode: barcodeType,
+              data: cleanCode,
+              width: barcodeWidth,
+              height: barcodeHeight,
+              drawText: true,
+              textStyle: const pw.TextStyle(fontSize: 7.5),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final doc = pw.Document(theme: theme);
+    if (isThermal58x40) {
+      const pageFormat = PdfPageFormat(
+        58 * PdfPageFormat.mm,
+        40 * PdfPageFormat.mm,
+        marginAll: 2.5 * PdfPageFormat.mm,
+      );
+      for (var i = 0; i < safeCopies; i++) {
+        doc.addPage(
+          pw.Page(
+            pageFormat: pageFormat,
+            build: (_) => buildSingleLabel(
+              barcodeWidth: 46 * PdfPageFormat.mm,
+              barcodeHeight: 15 * PdfPageFormat.mm,
+              titleFontSize: 8.5,
+              priceFontSize: 12,
+              shopFontSize: 6.5,
+            ),
+          ),
+        );
+      }
+    } else {
+      const cols = 3;
+      const rowsPerPage = 8;
+      const perPage = cols * rowsPerPage;
+      final totalPages = (safeCopies + perPage - 1) ~/ perPage;
+      for (var page = 0; page < totalPages; page++) {
+        final remaining = safeCopies - page * perPage;
+        final pageCount = remaining > perPage ? perPage : remaining;
+        doc.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            margin: const pw.EdgeInsets.all(10 * PdfPageFormat.mm),
+            build: (_) {
+              final rowWidgets = <pw.Widget>[];
+              for (var r = 0; r < rowsPerPage; r++) {
+                final cells = <pw.Widget>[];
+                for (var c = 0; c < cols; c++) {
+                  final idx = r * cols + c;
+                  cells.add(
+                    pw.Expanded(
+                      child: idx < pageCount
+                          ? pw.Container(
+                              height: 33 * PdfPageFormat.mm,
+                              margin: const pw.EdgeInsets.all(1.5),
+                              child: buildSingleLabel(
+                                barcodeWidth: 50 * PdfPageFormat.mm,
+                                barcodeHeight: 13 * PdfPageFormat.mm,
+                                titleFontSize: 8,
+                                priceFontSize: 10.5,
+                                shopFontSize: 6,
+                                withBorder: true,
+                              ),
+                            )
+                          : pw.SizedBox(height: 33 * PdfPageFormat.mm),
+                    ),
+                  );
+                }
+                rowWidgets.add(pw.Row(children: cells));
+              }
+              return pw.Column(children: rowWidgets);
+            },
+          ),
+        );
+      }
+    }
+
+    return doc.save();
   }
 
   static Future<String> saveExportFile(String filename, String content) async {

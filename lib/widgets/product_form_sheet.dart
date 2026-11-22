@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/product.dart';
 import '../screens/barcode_scanner_screen.dart';
 import '../state/shop_controller.dart';
+import 'barcode_label_sheet.dart';
 import 'currency_calculator_dialog.dart';
 
 class ProductFormSheet extends StatefulWidget {
@@ -44,6 +45,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
   late final TextEditingController _unitController;
   late final TextEditingController _costController;
   late final TextEditingController _sellController;
+  late final TextEditingController _wholesaleController;
   late final TextEditingController _stockController;
   late final TextEditingController _thresholdController;
 
@@ -87,6 +89,10 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
           ? item.sellPrice.toStringAsFixed(0)
           : (tpl != null ? tpl.sellPrice.toStringAsFixed(0) : ''),
     );
+    final initialWholesale = item?.wholesalePrice ?? tpl?.wholesalePrice ?? 0;
+    _wholesaleController = TextEditingController(
+      text: initialWholesale > 0 ? initialWholesale.toStringAsFixed(0) : '',
+    );
     _stockController = TextEditingController(
       text: item != null ? '${item.stock}' : '${widget.initialStock}',
     );
@@ -112,6 +118,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
     _unitController.dispose();
     _costController.dispose();
     _sellController.dispose();
+    _wholesaleController.dispose();
     _stockController.dispose();
     _thresholdController.dispose();
     super.dispose();
@@ -128,6 +135,22 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
     setState(() {
       target.text = code.trim();
     });
+  }
+
+  void _generateBarcodeIntoController(
+    TextEditingController target, {
+    required String prefix,
+  }) {
+    final code = widget.controller.generateUniqueEan13(prefix: prefix);
+    setState(() {
+      target.text = code;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(widget.controller.strings.barcodeGeneratedMsg(code)),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _openCalculator(
@@ -160,12 +183,74 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
+    final existing = widget.existing;
+    final duplicates = widget.controller.findDuplicateProducts(
+      name: _nameController.text,
+      sku: _skuController.text,
+      packBarcode: _packBarcodeController.text,
+      boxBarcode: _boxBarcodeController.text,
+      excludeProductId: existing?.id,
+    );
+    if (duplicates.isNotEmpty) {
+      final strings = widget.controller.strings;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogCtx) => AlertDialog(
+          icon: Icon(
+            Icons.warning_amber_rounded,
+            color: Theme.of(dialogCtx).colorScheme.error,
+          ),
+          title: Text(strings.duplicateFoundTitle),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(strings.duplicateFoundBody),
+                const SizedBox(height: 8),
+                for (final dup in duplicates.take(5))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '• ${dup.product.name}',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '  ${dup.reasons.join(', ')} • ${strings.stockCountLabel(dup.product.stock)}',
+                          style: Theme.of(dialogCtx).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(false),
+              child: Text(strings.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(true),
+              child: Text(strings.saveAnywayAction),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+    }
+
     final cost = double.parse(_costController.text.trim());
     final sell = double.parse(_sellController.text.trim());
+    final wholesaleRaw = _wholesaleController.text.trim().replaceAll(',', '.');
+    final wholesale =
+        wholesaleRaw.isEmpty ? 0.0 : (double.tryParse(wholesaleRaw) ?? 0.0);
     final stock = int.parse(_stockController.text.trim());
     final threshold = int.parse(_thresholdController.text.trim());
 
-    final existing = widget.existing;
     final Product resultProduct;
     if (existing == null) {
       resultProduct = await widget.controller.addProduct(
@@ -182,6 +267,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
         unit: _unitController.text,
         costPrice: cost,
         sellPrice: sell,
+        wholesalePrice: wholesale,
         stock: stock,
         lowStockThreshold: threshold,
       );
@@ -202,6 +288,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
         unit: _unitController.text.trim(),
         costPrice: cost,
         sellPrice: sell,
+        wholesalePrice: wholesale < 0 ? 0 : wholesale,
         stock: stock,
         lowStockThreshold: threshold,
       );
@@ -301,20 +388,43 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                   Expanded(
                     child: TextFormField(
                       controller: _skuController,
+                      onChanged: (_) => setState(() {}),
                       decoration: InputDecoration(
                         labelText: strings.skuLabel,
                         border: const OutlineInputBorder(),
-                        suffixIcon: IconButton(
-                          tooltip: strings.scanBarcodeTitle,
-                          onPressed: () =>
-                              _scanIntoController(_skuController),
-                          icon: const Icon(Icons.qr_code_scanner),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: strings.generateBarcodeAction,
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => _generateBarcodeIntoController(
+                                _skuController,
+                                prefix: '200',
+                              ),
+                              icon: const Icon(Icons.auto_awesome, size: 20),
+                            ),
+                            IconButton(
+                              tooltip: strings.scanBarcodeTitle,
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () =>
+                                  _scanIntoController(_skuController),
+                              icon: const Icon(Icons.qr_code_scanner, size: 20),
+                            ),
+                          ],
                         ),
                       ),
                     ),
                   ),
                 ],
               ),
+              if (_skuController.text.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ProductBarcodeWidget(
+                  code: _skuController.text.trim(),
+                  compact: true,
+                ),
+              ],
               if (categories.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 SizedBox(
@@ -380,6 +490,27 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: _wholesaleController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: strings.wholesalePriceLabel,
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    tooltip: strings.currencyCalculatorTitle,
+                    onPressed: () => _openCalculator(_wholesaleController),
+                    icon: const Icon(Icons.calculate_outlined),
+                  ),
+                ),
+                validator: (v) {
+                  final raw = (v ?? '').trim();
+                  if (raw.isEmpty) return null;
+                  return _validateNonNegativeDouble(raw, strings.wholesaleShort);
+                },
               ),
               const SizedBox(height: 10),
               Row(
@@ -500,11 +631,31 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                           decoration: InputDecoration(
                             labelText: strings.packBarcodeLabel,
                             border: const OutlineInputBorder(),
-                            suffixIcon: IconButton(
-                              tooltip: strings.scanBarcodeTitle,
-                              onPressed: () =>
-                                  _scanIntoController(_packBarcodeController),
-                              icon: const Icon(Icons.qr_code_scanner),
+                            suffixIcon: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: strings.generateBarcodeAction,
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () =>
+                                      _generateBarcodeIntoController(
+                                    _packBarcodeController,
+                                    prefix: '201',
+                                  ),
+                                  icon: const Icon(Icons.auto_awesome, size: 18),
+                                ),
+                                IconButton(
+                                  tooltip: strings.scanBarcodeTitle,
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => _scanIntoController(
+                                    _packBarcodeController,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.qr_code_scanner,
+                                    size: 18,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -516,11 +667,31 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                           decoration: InputDecoration(
                             labelText: strings.boxBarcodeLabel,
                             border: const OutlineInputBorder(),
-                            suffixIcon: IconButton(
-                              tooltip: strings.scanBarcodeTitle,
-                              onPressed: () =>
-                                  _scanIntoController(_boxBarcodeController),
-                              icon: const Icon(Icons.qr_code_scanner),
+                            suffixIcon: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: strings.generateBarcodeAction,
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () =>
+                                      _generateBarcodeIntoController(
+                                    _boxBarcodeController,
+                                    prefix: '202',
+                                  ),
+                                  icon: const Icon(Icons.auto_awesome, size: 18),
+                                ),
+                                IconButton(
+                                  tooltip: strings.scanBarcodeTitle,
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => _scanIntoController(
+                                    _boxBarcodeController,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.qr_code_scanner,
+                                    size: 18,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),

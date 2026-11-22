@@ -44,21 +44,52 @@ class SyncConflict {
   ConflictResolution resolution;
 }
 
+class SheetDuplicateEntry {
+  const SheetDuplicateEntry({
+    required this.rowNumber,
+    required this.firstRowNumber,
+    required this.product,
+    required this.reason,
+  });
+
+  final int rowNumber;
+  final int firstRowNumber;
+  final Product product;
+  final String reason;
+}
+
+class ProductDuplicateGroup {
+  const ProductDuplicateGroup({
+    required this.reason,
+    required this.products,
+  });
+
+  final String reason;
+  final List<Product> products;
+}
+
 class SheetSyncPreview {
   const SheetSyncPreview({
     required this.conflicts,
     required this.onlyInSheet,
     required this.onlyOnPhone,
     required this.matchedCount,
+    this.sheetDuplicates = const [],
+    this.localDuplicates = const [],
   });
 
   final List<SyncConflict> conflicts;
   final List<Product> onlyInSheet;
   final List<Product> onlyOnPhone;
   final int matchedCount;
+  final List<SheetDuplicateEntry> sheetDuplicates;
+  final List<ProductDuplicateGroup> localDuplicates;
 
   bool get hasChanges =>
-      conflicts.isNotEmpty || onlyInSheet.isNotEmpty || onlyOnPhone.isNotEmpty;
+      conflicts.isNotEmpty ||
+      onlyInSheet.isNotEmpty ||
+      onlyOnPhone.isNotEmpty ||
+      sheetDuplicates.isNotEmpty;
 }
 
 class GoogleSheetsSyncException implements Exception {
@@ -72,6 +103,15 @@ class GoogleSheetsSyncException implements Exception {
 class GoogleSheetsService {
   const GoogleSheetsService();
 
+  static HttpClient? _sharedClient;
+
+  static HttpClient _httpClient() {
+    return _sharedClient ??= (HttpClient()
+      ..connectionTimeout = const Duration(seconds: 20)
+      ..idleTimeout = const Duration(seconds: 30)
+      ..maxConnectionsPerHost = 6);
+  }
+
   static const String appsScriptTemplate = r'''
 const SHEET_NAME = 'Catalog';
 const SPREADSHEET_ID = ''; // Если скрипт создан отдельно на script.google.com, вставьте ID таблицы из URL
@@ -84,6 +124,7 @@ const HEADERS = [
   'sku',
   'costPrice',
   'sellPrice',
+  'wholesalePrice',
   'stock',
   'lowStockThreshold',
   'packQty',
@@ -335,40 +376,184 @@ function doPost(e) {
     if (cleanUrl.isEmpty) {
       throw const GoogleSheetsSyncException('URL is empty');
     }
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 20);
-    try {
-      final request = await client.getUrl(_buildGetUri(cleanUrl, secret));
-      request.followRedirects = true;
-      request.maxRedirects = 6;
-      final response = await request.close();
-      final body = await response.transform(utf8.decoder).join();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
-      }
-      if (body.trimLeft().startsWith('<')) {
-        throw const GoogleSheetsSyncException(
-          'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
-        );
-      }
-      final decoded = jsonDecode(body);
-      if (decoded is! Map<String, dynamic>) {
-        throw const GoogleSheetsSyncException('Invalid JSON response from Google Sheets');
-      }
-      if (decoded['ok'] != true) {
-        throw GoogleSheetsSyncException(
-          (decoded['error'] as String?) ?? 'Google Sheets script error',
-        );
-      }
-      final rawList = decoded['products'] as List<dynamic>? ?? const [];
-      final now = DateTime.now();
-      return rawList
-          .whereType<Map<String, dynamic>>()
-          .map((row) => _productFromSheetRow(row, now))
-          .where((p) => p.name.trim().isNotEmpty)
-          .toList();
-    } finally {
-      client.close(force: true);
+    final client = _httpClient();
+    final request = await client.getUrl(_buildGetUri(cleanUrl, secret));
+    request.followRedirects = true;
+    request.maxRedirects = 6;
+    final response = await request.close();
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
     }
+    if (body.trimLeft().startsWith('<')) {
+      throw const GoogleSheetsSyncException(
+        'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
+      );
+    }
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const GoogleSheetsSyncException('Invalid JSON response from Google Sheets');
+    }
+    if (decoded['ok'] != true) {
+      throw GoogleSheetsSyncException(
+        (decoded['error'] as String?) ?? 'Google Sheets script error',
+      );
+    }
+    final rawList = decoded['products'] as List<dynamic>? ?? const [];
+    final now = DateTime.now();
+    return rawList
+        .whereType<Map<String, dynamic>>()
+        .map((row) => _productFromSheetRow(row, now))
+        .where((p) => p.name.trim().isNotEmpty)
+        .toList();
+  }
+
+  static String normalizeName(String raw) {
+    return raw
+        .trim()
+        .toLowerCase()
+        .replaceAll('ё', 'е')
+        .replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  static Set<String> extractBarcodes(Product p) {
+    final codes = <String>{};
+    for (final raw in [p.sku, p.packBarcode, p.boxBarcode]) {
+      final clean = raw.trim().toLowerCase();
+      if (clean.isNotEmpty) {
+        codes.add(clean);
+      }
+    }
+    return codes;
+  }
+
+  static List<Product> deduplicateProducts(List<Product> items) {
+    final seenIds = <String>{};
+    final seenBarcodes = <String>{};
+    final seenNames = <String>{};
+    final result = <Product>[];
+
+    for (final p in items) {
+      final id = p.id.trim();
+      final barcodes = extractBarcodes(p);
+      final normName = normalizeName(p.name);
+
+      var isDup = false;
+      if (id.isNotEmpty && seenIds.contains(id)) {
+        isDup = true;
+      } else if (barcodes.any(seenBarcodes.contains)) {
+        isDup = true;
+      } else if (normName.isNotEmpty && seenNames.contains(normName)) {
+        isDup = true;
+      }
+      if (isDup) continue;
+
+      if (id.isNotEmpty) seenIds.add(id);
+      seenBarcodes.addAll(barcodes);
+      if (normName.isNotEmpty) seenNames.add(normName);
+      result.add(p);
+    }
+    return result;
+  }
+
+  static List<ProductDuplicateGroup> findDuplicateGroups(
+    List<Product> items,
+    AppStrings strings,
+  ) {
+    final groups = <ProductDuplicateGroup>[];
+    final groupedPairs = <String>{};
+
+    final byBarcode = <String, List<Product>>{};
+    final barcodeDisplay = <String, String>{};
+    for (final p in items) {
+      for (final raw in [p.sku, p.packBarcode, p.boxBarcode]) {
+        final trimmed = raw.trim();
+        final lower = trimmed.toLowerCase();
+        if (lower.isEmpty) continue;
+        barcodeDisplay.putIfAbsent(lower, () => trimmed);
+        final list = byBarcode.putIfAbsent(lower, () => []);
+        if (!list.any((e) => e.id == p.id)) {
+          list.add(p);
+        }
+      }
+    }
+    for (final entry in byBarcode.entries) {
+      if (entry.value.length > 1) {
+        groups.add(
+          ProductDuplicateGroup(
+            reason: '${strings.duplicateMatchBarcode}: ${barcodeDisplay[entry.key]}',
+            products: entry.value,
+          ),
+        );
+        for (var i = 0; i < entry.value.length; i++) {
+          for (var j = i + 1; j < entry.value.length; j++) {
+            final a = entry.value[i].id;
+            final b = entry.value[j].id;
+            groupedPairs.add(a.compareTo(b) <= 0 ? '$a|$b' : '$b|$a');
+          }
+        }
+      }
+    }
+
+    final byName = <String, List<Product>>{};
+    for (final p in items) {
+      final norm = normalizeName(p.name);
+      if (norm.isEmpty) continue;
+      byName.putIfAbsent(norm, () => []).add(p);
+    }
+    for (final entry in byName.entries) {
+      if (entry.value.length > 1) {
+        var allAlreadyPaired = true;
+        for (var i = 0; i < entry.value.length && allAlreadyPaired; i++) {
+          for (var j = i + 1; j < entry.value.length; j++) {
+            final a = entry.value[i].id;
+            final b = entry.value[j].id;
+            final key = a.compareTo(b) <= 0 ? '$a|$b' : '$b|$a';
+            if (!groupedPairs.contains(key)) {
+              allAlreadyPaired = false;
+              break;
+            }
+          }
+        }
+        if (!allAlreadyPaired) {
+          groups.add(
+            ProductDuplicateGroup(
+              reason: '${strings.duplicateMatchName}: ${entry.value.first.name}',
+              products: entry.value,
+            ),
+          );
+        }
+      }
+    }
+
+    return groups;
+  }
+
+  static List<Product> _deduplicateByIdOnly(List<Product> items) {
+    final seenIds = <String>{};
+    final result = <Product>[];
+    for (final p in items) {
+      final id = p.id.trim();
+      if (id.isNotEmpty && !seenIds.add(id)) continue;
+      result.add(p);
+    }
+    return result;
+  }
+
+  Future<void> _runWithRetry(Future<void> Function() action) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        await action();
+        return;
+      } catch (e) {
+        lastError = e;
+        if (attempt < 2) {
+          await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError!;
   }
 
   Future<int> pushProducts(
@@ -381,25 +566,34 @@ function doPost(e) {
     if (cleanUrl.isEmpty) {
       throw const GoogleSheetsSyncException('URL is empty');
     }
-    const batchSize = 500;
-    if (products.isEmpty) {
-      await _pushBatch(cleanUrl, const [], secret: secret, append: false);
+    final uniqueProducts = _deduplicateByIdOnly(products);
+    const batchSize = 5000;
+    if (uniqueProducts.isEmpty) {
+      await _runWithRetry(
+        () => _pushBatch(cleanUrl, const [], secret: secret, append: false),
+      );
       onProgress?.call(0, 0);
       return 0;
     }
     var totalPushed = 0;
-    for (var i = 0; i < products.length; i += batchSize) {
-      final end =
-          (i + batchSize < products.length) ? i + batchSize : products.length;
-      final batch = products.sublist(i, end);
-      await _pushBatch(
-        cleanUrl,
-        batch,
-        secret: secret,
-        append: i > 0,
+    for (var i = 0; i < uniqueProducts.length; i += batchSize) {
+      final end = (i + batchSize < uniqueProducts.length)
+          ? i + batchSize
+          : uniqueProducts.length;
+      final batch = uniqueProducts.sublist(i, end);
+      if (i > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      await _runWithRetry(
+        () => _pushBatch(
+          cleanUrl,
+          batch,
+          secret: secret,
+          append: i > 0,
+        ),
       );
       totalPushed += batch.length;
-      onProgress?.call(totalPushed, products.length);
+      onProgress?.call(totalPushed, uniqueProducts.length);
     }
     return totalPushed;
   }
@@ -429,18 +623,20 @@ function doPost(e) {
     if (cleanUrl.isEmpty) {
       throw const GoogleSheetsSyncException('URL is empty');
     }
-    const batchSize = 500;
+    const batchSize = 5000;
     if (rows.isEmpty) {
-      await _postJsonPayload(
-        cleanUrl,
-        {
-          'secret': secret.trim(),
-          'sheetName': sheetName.trim(),
-          'headers': headers,
-          'append': false,
-          'rows': const [],
-        },
-        expectSheetName: true,
+      await _runWithRetry(
+        () => _postJsonPayload(
+          cleanUrl,
+          {
+            'secret': secret.trim(),
+            'sheetName': sheetName.trim(),
+            'headers': headers,
+            'append': false,
+            'rows': const [],
+          },
+          expectSheetName: true,
+        ),
       );
       onProgress?.call(0, 0);
       return 0;
@@ -449,16 +645,21 @@ function doPost(e) {
     for (var i = 0; i < rows.length; i += batchSize) {
       final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
       final batch = rows.sublist(i, end);
-      await _postJsonPayload(
-        cleanUrl,
-        {
-          'secret': secret.trim(),
-          'sheetName': sheetName.trim(),
-          'headers': headers,
-          'append': i > 0,
-          'rows': batch,
-        },
-        expectSheetName: true,
+      if (i > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      await _runWithRetry(
+        () => _postJsonPayload(
+          cleanUrl,
+          {
+            'secret': secret.trim(),
+            'sheetName': sheetName.trim(),
+            'headers': headers,
+            'append': i > 0,
+            'rows': batch,
+          },
+          expectSheetName: true,
+        ),
       );
       totalPushed += batch.length;
       onProgress?.call(totalPushed, rows.length);
@@ -553,6 +754,15 @@ function doPost(e) {
       'negativeStockReminders': snapshot.negativeStockReminders,
       'allowNegativeStock': snapshot.allowNegativeStock,
       'autoBackupEnabled': snapshot.autoBackupEnabled,
+      if (snapshot.sheetCatalogBaseline.isNotEmpty)
+        'sheetCatalogBaseline': snapshot.sheetCatalogBaseline,
+      if (snapshot.inventorySnapshots.isNotEmpty)
+        'inventorySnapshots':
+            snapshot.inventorySnapshots.map((s) => s.toJson()).toList(),
+      if (snapshot.featureUsage.isNotEmpty)
+        'featureUsage': snapshot.featureUsage.map(
+          (k, v) => MapEntry(k, v.toJson()),
+        ),
     });
 
     return sections;
@@ -639,6 +849,18 @@ function doPost(e) {
     final rawHiddenCustomers =
         meta['hiddenCustomerSuggestions'] as List<dynamic>? ?? const [];
     final rawHeldSales = meta['heldSales'] as List<dynamic>? ?? const [];
+    final rawSnapshots =
+        meta['inventorySnapshots'] as List<dynamic>? ?? const [];
+    final rawFeatureUsage =
+        meta['featureUsage'] as Map<String, dynamic>? ?? const {};
+    final parsedFeatureUsage = <String, FeatureUsageStat>{};
+    for (final entry in rawFeatureUsage.entries) {
+      if (entry.value is Map<String, dynamic>) {
+        final stat =
+            FeatureUsageStat.fromJson(entry.value as Map<String, dynamic>);
+        if (stat.count > 0) parsedFeatureUsage[entry.key] = stat;
+      }
+    }
     final rawReminders =
         meta['negativeStockReminders'] as Map<String, dynamic>? ?? const {};
 
@@ -680,6 +902,14 @@ function doPost(e) {
         ..removeWhere((_, v) => v <= 0),
       allowNegativeStock: (meta['allowNegativeStock'] as bool?) ?? true,
       autoBackupEnabled: (meta['autoBackupEnabled'] as bool?) ?? true,
+      sheetCatalogBaseline:
+          (meta['sheetCatalogBaseline'] as Map<String, dynamic>? ?? const {})
+              .map((k, v) => MapEntry(k, '$v')),
+      inventorySnapshots: rawSnapshots
+          .whereType<Map<String, dynamic>>()
+          .map(InventoryValueSnapshot.fromJson)
+          .toList(),
+      featureUsage: parsedFeatureUsage,
     );
   }
 
@@ -726,67 +956,63 @@ function doPost(e) {
     if (cleanUrl.isEmpty) {
       throw const GoogleSheetsSyncException('URL is empty');
     }
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 25);
-    try {
-      final baseUri = _buildGetUri(cleanUrl, secret);
-      final params = Map<String, String>.from(baseUri.queryParameters);
-      params['action'] = 'backup';
-      final request = await client.getUrl(
-        baseUri.replace(queryParameters: params),
-      );
-      request.followRedirects = true;
-      request.maxRedirects = 6;
-      final response = await request.close();
-      final body = await response.transform(utf8.decoder).join();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
-      }
-      if (body.trimLeft().startsWith('<')) {
-        throw const GoogleSheetsSyncException(
-          'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
-        );
-      }
-      final decoded = jsonDecode(body);
-      if (decoded is! Map<String, dynamic>) {
-        throw const GoogleSheetsSyncException(
-          'Invalid JSON response from Google Sheets',
-        );
-      }
-      if (decoded['ok'] != true) {
-        throw GoogleSheetsSyncException(
-          (decoded['error'] as String?) ?? 'Google Sheets script error',
-        );
-      }
-      final updatedAt = (decoded['updatedAt'] as String?)?.trim();
-      if (decoded['sections'] is Map<String, dynamic>) {
-        final rawSections =
-            (decoded['sections'] as Map<String, dynamic>).map(
-          (k, v) => MapEntry(k, '$v'),
-        );
-        if (rawSections.isEmpty) {
-          return (snapshot: null, updatedAt: updatedAt);
-        }
-        return (
-          snapshot: parseSnapshotFromSections(rawSections),
-          updatedAt: updatedAt,
-        );
-      }
-      if (decoded.containsKey('backupJson')) {
-        final backupJson = (decoded['backupJson'] as String?) ?? '';
-        if (backupJson.trim().isEmpty) {
-          return (snapshot: null, updatedAt: updatedAt);
-        }
-        return (
-          snapshot: ExportService.parseBackupJson(backupJson),
-          updatedAt: updatedAt,
-        );
-      }
-      throw const GoogleSheetsSyncException(
-        'В Google Таблице всё ещё старая версия Apps Script. Скопируйте новый скрипт, сохраните и выберите «Управление развёртываниями -> Новая версия».',
-      );
-    } finally {
-      client.close(force: true);
+    final client = _httpClient();
+    final baseUri = _buildGetUri(cleanUrl, secret);
+    final params = Map<String, String>.from(baseUri.queryParameters);
+    params['action'] = 'backup';
+    final request = await client.getUrl(
+      baseUri.replace(queryParameters: params),
+    );
+    request.followRedirects = true;
+    request.maxRedirects = 6;
+    final response = await request.close();
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
     }
+    if (body.trimLeft().startsWith('<')) {
+      throw const GoogleSheetsSyncException(
+        'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
+      );
+    }
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const GoogleSheetsSyncException(
+        'Invalid JSON response from Google Sheets',
+      );
+    }
+    if (decoded['ok'] != true) {
+      throw GoogleSheetsSyncException(
+        (decoded['error'] as String?) ?? 'Google Sheets script error',
+      );
+    }
+    final updatedAt = (decoded['updatedAt'] as String?)?.trim();
+    if (decoded['sections'] is Map<String, dynamic>) {
+      final rawSections =
+          (decoded['sections'] as Map<String, dynamic>).map(
+        (k, v) => MapEntry(k, '$v'),
+      );
+      if (rawSections.isEmpty) {
+        return (snapshot: null, updatedAt: updatedAt);
+      }
+      return (
+        snapshot: parseSnapshotFromSections(rawSections),
+        updatedAt: updatedAt,
+      );
+    }
+    if (decoded.containsKey('backupJson')) {
+      final backupJson = (decoded['backupJson'] as String?) ?? '';
+      if (backupJson.trim().isEmpty) {
+        return (snapshot: null, updatedAt: updatedAt);
+      }
+      return (
+        snapshot: ExportService.parseBackupJson(backupJson),
+        updatedAt: updatedAt,
+      );
+    }
+    throw const GoogleSheetsSyncException(
+      'В Google Таблице всё ещё старая версия Apps Script. Скопируйте новый скрипт, сохраните и выберите «Управление развёртываниями -> Новая версия».',
+    );
   }
 
   Future<void> _pushBatch(
@@ -811,62 +1037,56 @@ function doPost(e) {
     bool expectSheetName = false,
     String? expectAction,
   }) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 30)
-      ..idleTimeout = const Duration(seconds: 60);
-    try {
-      final uri = Uri.parse(cleanUrl);
-      final payload = jsonEncode(bodyMap);
-      final bytes = utf8.encode(payload);
-      final request = await client.postUrl(uri);
-      request.followRedirects = false;
-      request.headers.contentType = ContentType.json;
-      request.contentLength = bytes.length;
-      request.add(bytes);
-      var response = await request.close();
+    final client = _httpClient();
+    final uri = Uri.parse(cleanUrl);
+    final payload = jsonEncode(bodyMap);
+    final bytes = utf8.encode(payload);
+    final request = await client.postUrl(uri);
+    request.followRedirects = false;
+    request.headers.contentType = ContentType.json;
+    request.contentLength = bytes.length;
+    request.add(bytes);
+    var response = await request.close();
 
-      // Google Apps Script Web Apps respond to POST with 302 redirect to script.googleusercontent.com
-      if (response.statusCode == 301 ||
-          response.statusCode == 302 ||
-          response.statusCode == 303 ||
-          response.statusCode == 307) {
-        final location = response.headers.value(HttpHeaders.locationHeader);
-        await response.drain<void>();
-        if (location != null && location.isNotEmpty) {
-          final redirectUri = uri.resolve(location);
-          final getReq = await client.getUrl(redirectUri);
-          getReq.followRedirects = true;
-          response = await getReq.close();
+    // Google Apps Script Web Apps respond to POST with 302 redirect to script.googleusercontent.com
+    if (response.statusCode == 301 ||
+        response.statusCode == 302 ||
+        response.statusCode == 303 ||
+        response.statusCode == 307) {
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      await response.drain<void>();
+      if (location != null && location.isNotEmpty) {
+        final redirectUri = uri.resolve(location);
+        final getReq = await client.getUrl(redirectUri);
+        getReq.followRedirects = true;
+        response = await getReq.close();
+      }
+    }
+
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
+    }
+    if (body.trimLeft().startsWith('<')) {
+      throw const GoogleSheetsSyncException(
+        'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
+      );
+    }
+    if (body.trim().isNotEmpty) {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        if (decoded['ok'] == false) {
+          throw GoogleSheetsSyncException(
+            (decoded['error'] as String?) ?? 'Google Sheets script error',
+          );
+        }
+        if ((expectSheetName && decoded['sheetName'] == null) ||
+            (expectAction != null && decoded['action'] != expectAction)) {
+          throw const GoogleSheetsSyncException(
+            'В Google Таблице всё ещё работает старая версия Apps Script. Скопируйте новый скрипт, вставьте его в Apps Script, сохраните и выберите «Управление развёртываниями -> Новая версия».',
+          );
         }
       }
-
-      final body = await response.transform(utf8.decoder).join();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
-      }
-      if (body.trimLeft().startsWith('<')) {
-        throw const GoogleSheetsSyncException(
-          'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
-        );
-      }
-      if (body.trim().isNotEmpty) {
-        final decoded = jsonDecode(body);
-        if (decoded is Map<String, dynamic>) {
-          if (decoded['ok'] == false) {
-            throw GoogleSheetsSyncException(
-              (decoded['error'] as String?) ?? 'Google Sheets script error',
-            );
-          }
-          if ((expectSheetName && decoded['sheetName'] == null) ||
-              (expectAction != null && decoded['action'] != expectAction)) {
-            throw const GoogleSheetsSyncException(
-              'В Google Таблице всё ещё работает старая версия Apps Script. Скопируйте новый скрипт, вставьте его в Apps Script, сохраните и выберите «Управление развёртываниями -> Новая версия».',
-            );
-          }
-        }
-      }
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -876,14 +1096,72 @@ function doPost(e) {
     required AppStrings strings,
     required AppCurrency currency,
   }) {
+    final seenRemoteIdRow = <String, int>{};
+    final seenRemoteBarcodeRow = <String, int>{};
+    final seenRemoteNameRow = <String, int>{};
+    final sheetDuplicates = <SheetDuplicateEntry>[];
+    final uniqueRemote = <Product>[];
+
+    for (var i = 0; i < remoteProducts.length; i++) {
+      final remote = remoteProducts[i];
+      final rowNum = i + 2;
+      final id = remote.id.trim();
+      final barcodes = extractBarcodes(remote);
+      final normName = normalizeName(remote.name);
+
+      int? firstRow;
+      String? dupReason;
+      if (id.isNotEmpty && seenRemoteIdRow.containsKey(id)) {
+        firstRow = seenRemoteIdRow[id];
+        dupReason = '${strings.duplicateMatchId}: $id';
+      } else {
+        for (final code in barcodes) {
+          if (seenRemoteBarcodeRow.containsKey(code)) {
+            firstRow = seenRemoteBarcodeRow[code];
+            dupReason = '${strings.duplicateMatchBarcode}: $code';
+            break;
+          }
+        }
+        if (firstRow == null && normName.isNotEmpty && seenRemoteNameRow.containsKey(normName)) {
+          firstRow = seenRemoteNameRow[normName];
+          dupReason = strings.duplicateMatchName;
+        }
+      }
+
+      if (firstRow != null && dupReason != null) {
+        sheetDuplicates.add(
+          SheetDuplicateEntry(
+            rowNumber: rowNum,
+            firstRowNumber: firstRow,
+            product: remote,
+            reason: dupReason,
+          ),
+        );
+        continue;
+      }
+
+      if (id.isNotEmpty) seenRemoteIdRow[id] = rowNum;
+      for (final code in barcodes) {
+        seenRemoteBarcodeRow.putIfAbsent(code, () => rowNum);
+      }
+      if (normName.isNotEmpty) {
+        seenRemoteNameRow.putIfAbsent(normName, () => rowNum);
+      }
+      uniqueRemote.add(remote);
+    }
+
     final localById = <String, Product>{
       for (final p in localProducts) p.id: p,
     };
-    final localBySku = <String, Product>{};
+    final localByBarcode = <String, Product>{};
+    final localByName = <String, Product>{};
     for (final p in localProducts) {
-      final sku = p.sku.trim().toLowerCase();
-      if (sku.isNotEmpty && !localBySku.containsKey(sku)) {
-        localBySku[sku] = p;
+      for (final code in extractBarcodes(p)) {
+        localByBarcode.putIfAbsent(code, () => p);
+      }
+      final norm = normalizeName(p.name);
+      if (norm.isNotEmpty) {
+        localByName.putIfAbsent(norm, () => p);
       }
     }
 
@@ -892,14 +1170,23 @@ function doPost(e) {
     final onlyInSheet = <Product>[];
     var matchedCount = 0;
 
-    for (final remote in remoteProducts) {
+    for (final remote in uniqueRemote) {
       Product? local;
       if (remote.id.trim().isNotEmpty && localById.containsKey(remote.id)) {
         local = localById[remote.id];
-      } else {
-        final sku = remote.sku.trim().toLowerCase();
-        if (sku.isNotEmpty && localBySku.containsKey(sku)) {
-          local = localBySku[sku];
+      }
+      if (local == null) {
+        for (final code in extractBarcodes(remote)) {
+          if (localByBarcode.containsKey(code)) {
+            local = localByBarcode[code];
+            break;
+          }
+        }
+      }
+      if (local == null) {
+        final norm = normalizeName(remote.name);
+        if (norm.isNotEmpty && localByName.containsKey(norm)) {
+          local = localByName[norm];
         }
       }
 
@@ -932,12 +1219,15 @@ function doPost(e) {
     final onlyOnPhone = localProducts
         .where((p) => !matchedLocalIds.contains(p.id))
         .toList();
+    final localDuplicates = findDuplicateGroups(localProducts, strings);
 
     return SheetSyncPreview(
       conflicts: conflicts,
       onlyInSheet: onlyInSheet,
       onlyOnPhone: onlyOnPhone,
       matchedCount: matchedCount,
+      sheetDuplicates: sheetDuplicates,
+      localDuplicates: localDuplicates,
     );
   }
 
@@ -996,6 +1286,18 @@ function doPost(e) {
           fieldLabel: strings.sellShort,
           localValue: formatMoney(local.sellPrice, currency),
           remoteValue: formatMoney(remote.sellPrice, currency),
+          deltaLabel: '$sign${formatMoney(delta.abs(), currency)}',
+        ),
+      );
+    }
+    if ((local.wholesalePrice - remote.wholesalePrice).abs() > 0.009) {
+      final delta = remote.wholesalePrice - local.wholesalePrice;
+      final sign = delta > 0 ? '+' : '-';
+      diffs.add(
+        SyncFieldDiff(
+          fieldLabel: strings.wholesaleShort,
+          localValue: formatMoney(local.wholesalePrice, currency),
+          remoteValue: formatMoney(remote.wholesalePrice, currency),
           deltaLabel: '$sign${formatMoney(delta.abs(), currency)}',
         ),
       );
@@ -1068,6 +1370,7 @@ function doPost(e) {
       'sku': p.sku,
       'costPrice': p.costPrice,
       'sellPrice': p.sellPrice,
+      'wholesalePrice': p.wholesalePrice > 0 ? p.wholesalePrice : '',
       'stock': p.stock,
       'lowStockThreshold': p.lowStockThreshold,
       'packQty': p.packQty,
@@ -1114,6 +1417,8 @@ function doPost(e) {
       unit: parseStr(row['unit']),
       costPrice: parseDouble(row['costPrice']).clamp(0.0, double.infinity),
       sellPrice: parseDouble(row['sellPrice']).clamp(0.0, double.infinity),
+      wholesalePrice:
+          parseDouble(row['wholesalePrice']).clamp(0.0, double.infinity),
       stock: parseInt(row['stock']).clamp(0, 9999999),
       lowStockThreshold: parseInt(row['lowStockThreshold'], fallback: 5).clamp(0, 999999),
       updatedAt: DateTime.tryParse(updatedRaw) ?? fallbackNow,

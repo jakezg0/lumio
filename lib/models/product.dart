@@ -14,8 +14,11 @@ class Product {
     this.unit = '',
     required this.costPrice,
     required this.sellPrice,
+    this.wholesalePrice = 0,
     required this.stock,
     this.lowStockThreshold = 5,
+    this.outOfStockSince,
+    this.totalOutOfStockDays = 0,
     this.archivedAt,
     this.trashedAt,
     required this.updatedAt,
@@ -35,8 +38,11 @@ class Product {
   final String unit;
   final double costPrice;
   final double sellPrice;
+  final double wholesalePrice;
   final int stock;
   final int lowStockThreshold;
+  final DateTime? outOfStockSince;
+  final int totalOutOfStockDays;
   final DateTime? archivedAt;
   final DateTime? trashedAt;
   final DateTime updatedAt;
@@ -45,10 +51,16 @@ class Product {
   bool get isTrashed => trashedAt != null;
   bool get isActive => archivedAt == null && trashedAt == null;
 
+  bool get hasWholesalePrice => wholesalePrice > 0.009;
+
   double get unitProfit => sellPrice - costPrice;
 
   double get marginPercent =>
       sellPrice > 0 ? ((sellPrice - costPrice) / sellPrice) * 100 : 0;
+
+  double get wholesaleMarginPercent => wholesalePrice > 0
+      ? ((wholesalePrice - costPrice) / wholesalePrice) * 100
+      : 0;
 
   double get inventoryValue => costPrice * stock;
 
@@ -57,6 +69,16 @@ class Product {
   bool get isOutOfStock => stock <= 0;
 
   bool get isLowStock => stock > 0 && stock <= lowStockThreshold;
+
+  int get currentOutOfStockDays {
+    if (stock > 0) return 0;
+    final since = outOfStockSince ?? updatedAt;
+    final days = DateTime.now().difference(since).inDays;
+    return days < 0 ? 0 : days;
+  }
+
+  int get cumulativeOutOfStockDays =>
+      totalOutOfStockDays + currentOutOfStockDays;
 
   Product copyWith({
     String? id,
@@ -73,8 +95,12 @@ class Product {
     String? unit,
     double? costPrice,
     double? sellPrice,
+    double? wholesalePrice,
     int? stock,
     int? lowStockThreshold,
+    DateTime? outOfStockSince,
+    bool clearOutOfStockSince = false,
+    int? totalOutOfStockDays,
     DateTime? archivedAt,
     bool clearArchivedAt = false,
     DateTime? trashedAt,
@@ -96,8 +122,13 @@ class Product {
       unit: unit ?? this.unit,
       costPrice: costPrice ?? this.costPrice,
       sellPrice: sellPrice ?? this.sellPrice,
+      wholesalePrice: wholesalePrice ?? this.wholesalePrice,
       stock: stock ?? this.stock,
       lowStockThreshold: lowStockThreshold ?? this.lowStockThreshold,
+      outOfStockSince: clearOutOfStockSince
+          ? null
+          : (outOfStockSince ?? this.outOfStockSince),
+      totalOutOfStockDays: totalOutOfStockDays ?? this.totalOutOfStockDays,
       archivedAt: clearArchivedAt ? null : (archivedAt ?? this.archivedAt),
       trashedAt: clearTrashedAt ? null : (trashedAt ?? this.trashedAt),
       updatedAt: updatedAt ?? this.updatedAt,
@@ -120,8 +151,12 @@ class Product {
       'unit': unit,
       'costPrice': costPrice,
       'sellPrice': sellPrice,
+      if (wholesalePrice > 0) 'wholesalePrice': wholesalePrice,
       'stock': stock,
       'lowStockThreshold': lowStockThreshold,
+      if (outOfStockSince != null)
+        'outOfStockSince': outOfStockSince!.toIso8601String(),
+      if (totalOutOfStockDays > 0) 'totalOutOfStockDays': totalOutOfStockDays,
       'archivedAt': archivedAt?.toIso8601String(),
       'trashedAt': trashedAt?.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
@@ -129,6 +164,7 @@ class Product {
   }
 
   factory Product.fromJson(Map<String, dynamic> json) {
+    final outOfStockRaw = json['outOfStockSince'] as String?;
     final archivedRaw = json['archivedAt'] as String?;
     final trashedRaw = json['trashedAt'] as String?;
     return Product(
@@ -146,8 +182,13 @@ class Product {
       unit: (json['unit'] as String?) ?? '',
       costPrice: (json['costPrice'] as num).toDouble(),
       sellPrice: (json['sellPrice'] as num).toDouble(),
+      wholesalePrice: (json['wholesalePrice'] as num?)?.toDouble() ?? 0,
       stock: (json['stock'] as num).toInt(),
       lowStockThreshold: (json['lowStockThreshold'] as num?)?.toInt() ?? 5,
+      outOfStockSince:
+          outOfStockRaw != null ? DateTime.tryParse(outOfStockRaw) : null,
+      totalOutOfStockDays:
+          (json['totalOutOfStockDays'] as num?)?.toInt() ?? 0,
       archivedAt: archivedRaw != null ? DateTime.tryParse(archivedRaw) : null,
       trashedAt: trashedRaw != null ? DateTime.tryParse(trashedRaw) : null,
       updatedAt: DateTime.parse(json['updatedAt'] as String),

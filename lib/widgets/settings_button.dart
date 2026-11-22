@@ -6,6 +6,7 @@ import '../l10n/app_strings.dart';
 import '../screens/archive_trash_screen.dart';
 import '../state/shop_controller.dart';
 import 'backup_export_sheet.dart';
+import 'feature_usage_sheet.dart';
 
 class SettingsButton extends StatelessWidget {
   const SettingsButton({
@@ -26,7 +27,10 @@ class SettingsButton extends StatelessWidget {
     );
   }
 
-  Future<bool> _authenticateWithDevice(BuildContext context) async {
+  Future<bool> _authenticateWithDevice(
+    BuildContext context, {
+    String? reason,
+  }) async {
     final strings = controller.strings;
     final auth = LocalAuthentication();
     try {
@@ -41,7 +45,7 @@ class SettingsButton extends StatelessWidget {
         return false;
       }
       return await auth.authenticate(
-        localizedReason: strings.biometricPromptReason,
+        localizedReason: reason ?? strings.biometricPromptReason,
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: false,
@@ -54,6 +58,52 @@ class SettingsButton extends StatelessWidget {
         );
       }
       return false;
+    }
+  }
+
+  Future<void> _recoverForgottenPin(
+    BuildContext dialogContext, {
+    bool closeSheetOnSuccess = true,
+  }) async {
+    final strings = controller.strings;
+    final confirmed = await showDialog<bool>(
+      context: dialogContext,
+      builder: (ctx) => AlertDialog(
+        title: Text(strings.resetPinTitle),
+        content: Text(strings.resetPinConfirmBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(strings.confirm),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !dialogContext.mounted) return;
+    final verified = await _authenticateWithDevice(
+      dialogContext,
+      reason: strings.resetPinPromptReason,
+    );
+    if (!verified) {
+      if (dialogContext.mounted) {
+        ScaffoldMessenger.of(dialogContext).showSnackBar(
+          SnackBar(content: Text(strings.biometricFailedMsg)),
+        );
+      }
+      return;
+    }
+    await controller.resetOwnerPinAndUnlock();
+    if (dialogContext.mounted) {
+      if (closeSheetOnSuccess) {
+        Navigator.of(dialogContext).pop();
+      }
+      ScaffoldMessenger.of(dialogContext).showSnackBar(
+        SnackBar(content: Text(strings.pinResetSuccessMsg)),
+      );
     }
   }
 
@@ -100,6 +150,12 @@ class SettingsButton extends StatelessWidget {
       ),
     );
     if (result == null) return;
+    if (result == _ChangePinDialog.forgotPinSentinel) {
+      if (context.mounted) {
+        await _recoverForgottenPin(context, closeSheetOnSuccess: false);
+      }
+      return;
+    }
     await controller.setOwnerPin(result);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -174,10 +230,16 @@ class SettingsButton extends StatelessWidget {
         autofocus: true,
         biometricBtnLabel:
             controller.useBiometricUnlock ? strings.useBiometricBtn : null,
+        forgotPinBtnLabel: strings.forgotPinBtn,
       ),
     );
 
     if (attempt == null) return;
+    if (attempt == _PinPromptDialog.forgotPinSentinel) {
+      if (!dialogContext.mounted) return;
+      await _recoverForgottenPin(dialogContext);
+      return;
+    }
     if (attempt == _PinPromptDialog.biometricSentinel) {
       if (!dialogContext.mounted) return;
       final verified = await _authenticateWithDevice(dialogContext);
@@ -478,6 +540,9 @@ class SettingsButton extends StatelessWidget {
                             trailing:
                                 const Icon(Icons.chevron_right, size: 20),
                             onTap: () {
+                              controller.trackFeatureUsage(
+                                FeatureUsageKeys.googleSheets,
+                              );
                               Navigator.of(sheetContext).pop();
                               showModalBottomSheet<void>(
                                 context: context,
@@ -499,6 +564,9 @@ class SettingsButton extends StatelessWidget {
                             trailing:
                                 const Icon(Icons.chevron_right, size: 20),
                             onTap: () {
+                              controller.trackFeatureUsage(
+                                FeatureUsageKeys.backupExport,
+                              );
                               Navigator.of(sheetContext).pop();
                               showModalBottomSheet<void>(
                                 context: context,
@@ -543,6 +611,9 @@ class SettingsButton extends StatelessWidget {
                               ],
                             ),
                             onTap: () {
+                              controller.trackFeatureUsage(
+                                FeatureUsageKeys.archiveTrash,
+                              );
                               Navigator.of(sheetContext).pop();
                               Navigator.of(context).push(
                                 MaterialPageRoute<void>(
@@ -550,6 +621,35 @@ class SettingsButton extends StatelessWidget {
                                     controller: controller,
                                   ),
                                 ),
+                              );
+                            },
+                          ),
+                          const Divider(height: 1),
+                          ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.insights_outlined),
+                            title: Text(strings.featureUsageBtn),
+                            subtitle: Text(
+                              strings.featureUsageSubtitle(
+                                controller.totalFeatureUsageCount,
+                                controller.featureUsage.values
+                                    .where((s) => s.count > 0)
+                                    .length,
+                                FeatureUsageKeys.all.length,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing:
+                                const Icon(Icons.chevron_right, size: 20),
+                            onTap: () {
+                              Navigator.of(sheetContext).pop();
+                              showModalBottomSheet<void>(
+                                context: context,
+                                isScrollControlled: true,
+                                useSafeArea: true,
+                                builder: (_) =>
+                                    FeatureUsageSheet(controller: controller),
                               );
                             },
                           ),
@@ -576,9 +676,11 @@ class _PinPromptDialog extends StatefulWidget {
     this.initialPin = '',
     this.autofocus = false,
     this.biometricBtnLabel,
+    this.forgotPinBtnLabel,
   });
 
   static const String biometricSentinel = '__USE_BIOMETRIC__';
+  static const String forgotPinSentinel = '__FORGOT_PIN__';
 
   final String title;
   final String hintLabel;
@@ -587,6 +689,7 @@ class _PinPromptDialog extends StatefulWidget {
   final String initialPin;
   final bool autofocus;
   final String? biometricBtnLabel;
+  final String? forgotPinBtnLabel;
 
   @override
   State<_PinPromptDialog> createState() => _PinPromptDialogState();
@@ -636,6 +739,22 @@ class _PinPromptDialogState extends State<_PinPromptDialog> {
                 label: Text(widget.biometricBtnLabel!),
               ),
             ],
+            if (widget.forgotPinBtnLabel != null) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () => Navigator.of(context)
+                      .pop(_PinPromptDialog.forgotPinSentinel),
+                  icon: const Icon(Icons.lock_reset_outlined, size: 18),
+                  label: Text(widget.forgotPinBtnLabel!),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -658,6 +777,8 @@ class _ChangePinDialog extends StatefulWidget {
     required this.strings,
     required this.existingPin,
   });
+
+  static const String forgotPinSentinel = '__FORGOT_PIN__';
 
   final AppStrings strings;
   final String existingPin;
@@ -764,6 +885,22 @@ class _ChangePinDialogState extends State<_ChangePinDialog> {
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.error,
                   fontSize: 13,
+                ),
+              ),
+            ],
+            if (_hasExisting) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () => Navigator.of(context)
+                      .pop(_ChangePinDialog.forgotPinSentinel),
+                  icon: const Icon(Icons.lock_reset_outlined, size: 18),
+                  label: Text(s.forgotPinBtn),
                 ),
               ),
             ],

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../l10n/app_strings.dart';
+import '../models/customer.dart';
 import '../models/product.dart';
 import '../models/sale.dart';
 import '../state/shop_controller.dart';
@@ -328,6 +329,7 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _scanAndAddBySku() async {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.barcodeScan);
     final strings = widget.controller.strings;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -418,6 +420,7 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   void _openHeldSales() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.holdSale);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -538,6 +541,17 @@ class _PosScreenState extends State<PosScreen> {
                       Padding(
                         padding: const EdgeInsets.only(right: 8),
                         child: FilterChip(
+                          avatar: const Icon(Icons.storefront_outlined, size: 16),
+                          label: Text(strings.wholesaleModeChip),
+                          selected: widget.controller.wholesaleCartMode,
+                          onSelected: (selected) {
+                            widget.controller.setWholesaleCartMode(selected);
+                          },
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: FilterChip(
                           label: Text(
                             strings.inStockFilter(
                               widget.controller.products
@@ -604,6 +618,12 @@ class _PosScreenState extends State<PosScreen> {
                                   widget.controller.cartQuantityFor(product.id);
                               final canAdd = widget.controller.canSellNegativeStock ||
                                   (product.stock > 0 && inCart < product.stock);
+                              final isWholesale =
+                                  widget.controller.wholesaleCartMode &&
+                                      product.hasWholesalePrice;
+                              final activePrice = isWholesale
+                                  ? product.wholesalePrice
+                                  : product.sellPrice;
 
                               return Card(
                                 margin: EdgeInsets.zero,
@@ -639,8 +659,9 @@ class _PosScreenState extends State<PosScreen> {
                                     ),
                                   ),
                                   subtitle: Text(
-                                    '${formatMoney(product.sellPrice, currency)}  •  '
-                                    '${strings.stockCountLabel(product.stock)}'
+                                    '${formatMoney(activePrice, currency)}'
+                                    '${isWholesale ? ' (${strings.wholesaleShort})' : (product.hasWholesalePrice ? ' • ${strings.wholesaleShort}: ${formatMoney(product.wholesalePrice, currency)}' : '')}'
+                                    '  •  ${strings.stockCountLabel(product.stock)}'
                                     '${inCart > 0 ? '  •  ${strings.inCartLabel(inCart)}' : ''}',
                                   ),
                                   trailing: inCart > 0
@@ -809,11 +830,14 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
       TextEditingController(text: '0');
   final TextEditingController _discountPercentController =
       TextEditingController();
+  final TextEditingController _discountReasonController =
+      TextEditingController();
   final TextEditingController _paidNowController =
       TextEditingController(text: '0');
   final TextEditingController _cashReceivedController = TextEditingController();
   final TextEditingController _primarySplitController = TextEditingController();
   PaymentMethod _paymentMethod = PaymentMethod.cash;
+  CustomerSegment _customerSegment = CustomerSegment.retail;
   bool _splitPayment = false;
   PaymentMethod _secondaryMethod = PaymentMethod.kaspiQr;
   DateTime? _dueDate;
@@ -828,6 +852,7 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
     _phoneController.dispose();
     _discountController.dispose();
     _discountPercentController.dispose();
+    _discountReasonController.dispose();
     _paidNowController.dispose();
     _cashReceivedController.dispose();
     _primarySplitController.dispose();
@@ -897,6 +922,7 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
     _discountDrivenByPercent = false;
     _discountController.text = '0';
     _discountPercentController.clear();
+    _discountReasonController.clear();
     setState(() {});
   }
 
@@ -944,6 +970,13 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
     if (knownPhone.isNotEmpty) {
       _phoneController.text = knownPhone;
       _phoneError = null;
+    }
+    final existing = widget.controller.findCustomerByName(name);
+    if (existing != null) {
+      _customerSegment = existing.segment;
+      if (existing.segment == CustomerSegment.wholesale) {
+        widget.controller.setWholesaleCartMode(true);
+      }
     }
   }
 
@@ -1053,7 +1086,11 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
       secondaryAmount: secondaryAmount,
       customerName: _customerController.text,
       customerPhone: _phoneController.text,
+      customerSegment: _customerController.text.trim().isNotEmpty
+          ? _customerSegment
+          : null,
       discount: _discount,
+      discountReason: _discount > 0 ? _discountReasonController.text : '',
       paidAmount: _paymentMethod == PaymentMethod.postPay ? _paidNow : null,
       dueDate: _paymentMethod == PaymentMethod.postPay ? _dueDate : null,
     );
@@ -1101,9 +1138,23 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  strings.checkout,
-                  style: Theme.of(context).textTheme.titleLarge,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        strings.checkout,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    FilterChip(
+                      visualDensity: VisualDensity.compact,
+                      avatar: const Icon(Icons.storefront_outlined, size: 15),
+                      label: Text(strings.wholesaleModeChip),
+                      selected: widget.controller.wholesaleCartMode,
+                      onSelected: (v) =>
+                          widget.controller.setWholesaleCartMode(v),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 for (final line in lines)
@@ -1120,10 +1171,11 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                             currency: currency,
                             title: line.product.name,
                             label: strings.customPriceLabel,
-                            helper:
-                                '${strings.sellShort}: ${formatMoney(line.product.sellPrice, currency)}',
+                            helper: line.product.hasWholesalePrice
+                                ? '${strings.sellShort}: ${formatMoney(line.product.sellPrice, currency)} • ${strings.wholesaleShort}: ${formatMoney(line.product.wholesalePrice, currency)}'
+                                : '${strings.sellShort}: ${formatMoney(line.product.sellPrice, currency)}',
                             initialValue: line.unitPrice,
-                            defaultPrice: line.product.sellPrice,
+                            defaultPrice: line.defaultUnitPrice,
                             cancelLabel: strings.cancel,
                             resetLabel: strings.resetAction,
                             confirmLabel: strings.applyAction,
@@ -1142,10 +1194,15 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                           children: [
                             Flexible(
                               child: Text(
-                                '${formatMoney(line.unitPrice, currency)} × ${line.quantity} = ${formatMoney(line.lineTotal, currency)}',
-                                style: line.hasCustomPrice
+                                '${formatMoney(line.unitPrice, currency)}'
+                                '${line.isWholesalePriceApplied ? ' (${strings.wholesaleAppliedBadge})' : ''}'
+                                ' × ${line.quantity} = ${formatMoney(line.lineTotal, currency)}',
+                                style: (line.hasCustomPrice ||
+                                        line.isWholesalePriceApplied)
                                     ? TextStyle(
-                                        color: Theme.of(context).colorScheme.primary,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
                                         fontWeight: FontWeight.w600,
                                       )
                                     : null,
@@ -1516,6 +1573,27 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                     isDense: true,
                   ),
                 ),
+                if (_customerController.text.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      for (final seg in CustomerSegment.values)
+                        ChoiceChip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(strings.customerSegmentLabel(seg.name)),
+                          selected: _customerSegment == seg,
+                          onSelected: (_) {
+                            setState(() => _customerSegment = seg);
+                            if (seg == CustomerSegment.wholesale) {
+                              widget.controller.setWholesaleCartMode(true);
+                            }
+                          },
+                        ),
+                    ],
+                  ),
+                ],
                 if (isPostPay) ...[
                   const SizedBox(height: 10),
                   TextField(
@@ -1634,6 +1712,49 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
                         ],
                       );
                     },
+                  ),
+                ],
+                if (_discount > 0) ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _discountReasonController,
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                      labelText: strings.discountReasonLabel,
+                      prefixIcon: const Icon(Icons.label_outline, size: 18),
+                      suffixIcon:
+                          _discountReasonController.text.trim().isNotEmpty
+                              ? IconButton(
+                                  onPressed: () {
+                                    _discountReasonController.clear();
+                                    setState(() {});
+                                  },
+                                  icon: const Icon(Icons.clear, size: 18),
+                                )
+                              : null,
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final preset in strings.discountReasonPresets)
+                        ChoiceChip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(preset),
+                          selected: _discountReasonController.text.trim() ==
+                              preset,
+                          onSelected: (selected) {
+                            setState(() {
+                              _discountReasonController.text =
+                                  selected ? preset : '';
+                            });
+                          },
+                        ),
+                    ],
                   ),
                 ],
                 if (_paymentMethod == PaymentMethod.cash) ...[
@@ -2260,6 +2381,7 @@ class _AddProductToCheckoutSheetState extends State<_AddProductToCheckoutSheet> 
   }
 
   Future<void> _openScanner() async {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.barcodeScan);
     final strings = widget.controller.strings;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -2349,10 +2471,10 @@ class _AddProductToCheckoutSheetState extends State<_AddProductToCheckoutSheet> 
                       ),
                     ),
                     if (!isCashier)
-                      TextButton.icon(
+                      IconButton.filledTonal(
+                        tooltip: strings.addNewGood,
                         onPressed: _createNewProduct,
-                        icon: const Icon(Icons.add, size: 18),
-                        label: Text(strings.addNewGood),
+                        icon: const Icon(Icons.add, size: 20),
                       ),
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(),

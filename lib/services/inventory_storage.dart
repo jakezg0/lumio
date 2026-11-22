@@ -9,6 +9,90 @@ import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/stock_in.dart';
 
+class InventoryValueSnapshot {
+  const InventoryValueSnapshot({
+    required this.monthKey,
+    required this.capturedAt,
+    required this.productsCount,
+    required this.totalUnits,
+    required this.costValue,
+    required this.sellValue,
+  });
+
+  /// Format: 'YYYY-MM', e.g. '2026-11'
+  final String monthKey;
+  final DateTime capturedAt;
+  final int productsCount;
+  final int totalUnits;
+  final double costValue;
+  final double sellValue;
+
+  double get expectedProfit => sellValue - costValue;
+
+  int get year {
+    final parts = monthKey.split('-');
+    return parts.isNotEmpty
+        ? (int.tryParse(parts[0]) ?? capturedAt.year)
+        : capturedAt.year;
+  }
+
+  int get month {
+    final parts = monthKey.split('-');
+    return parts.length >= 2
+        ? (int.tryParse(parts[1]) ?? capturedAt.month)
+        : capturedAt.month;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'monthKey': monthKey,
+        'capturedAt': capturedAt.toIso8601String(),
+        'productsCount': productsCount,
+        'totalUnits': totalUnits,
+        'costValue': costValue,
+        'sellValue': sellValue,
+      };
+
+  factory InventoryValueSnapshot.fromJson(Map<String, dynamic> json) {
+    final captured =
+        DateTime.tryParse('${json['capturedAt'] ?? ''}') ?? DateTime.now();
+    final rawKey = '${json['monthKey'] ?? ''}'.trim();
+    final key = rawKey.isNotEmpty
+        ? rawKey
+        : '${captured.year}-${captured.month.toString().padLeft(2, '0')}';
+    return InventoryValueSnapshot(
+      monthKey: key,
+      capturedAt: captured,
+      productsCount: (json['productsCount'] as num?)?.toInt() ?? 0,
+      totalUnits: (json['totalUnits'] as num?)?.toInt() ?? 0,
+      costValue: (json['costValue'] as num?)?.toDouble() ?? 0.0,
+      sellValue: (json['sellValue'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+}
+
+class FeatureUsageStat {
+  const FeatureUsageStat({
+    required this.count,
+    this.lastUsedAt,
+  });
+
+  final int count;
+  final DateTime? lastUsedAt;
+
+  Map<String, dynamic> toJson() => {
+        'count': count,
+        if (lastUsedAt != null) 'lastUsedAt': lastUsedAt!.toIso8601String(),
+      };
+
+  factory FeatureUsageStat.fromJson(Map<String, dynamic> json) {
+    final rawDate = '${json['lastUsedAt'] ?? ''}'.trim();
+    return FeatureUsageStat(
+      count: (json['count'] as num?)?.toInt() ?? 0,
+      lastUsedAt: rawDate.isNotEmpty ? DateTime.tryParse(rawDate) : null,
+    );
+  }
+}
+
 class ShopDataSnapshot {
   const ShopDataSnapshot({
     required this.products,
@@ -39,6 +123,9 @@ class ShopDataSnapshot {
     this.autoBackupEnabled = true,
     this.lastAutoBackupAt = '',
     this.cloudBackupHashes = const {},
+    this.sheetCatalogBaseline = const {},
+    this.inventorySnapshots = const [],
+    this.featureUsage = const {},
   });
 
   final List<Product> products;
@@ -69,6 +156,9 @@ class ShopDataSnapshot {
   final bool autoBackupEnabled;
   final String lastAutoBackupAt;
   final Map<String, String> cloudBackupHashes;
+  final Map<String, String> sheetCatalogBaseline;
+  final List<InventoryValueSnapshot> inventorySnapshots;
+  final Map<String, FeatureUsageStat> featureUsage;
 }
 
 abstract class InventoryStorage {
@@ -278,6 +368,15 @@ ShopDataSnapshot _decodeSnapshotFromRawJson(String raw) {
     cloudBackupHashes:
         (decoded['cloudBackupHashes'] as Map<String, dynamic>? ?? const {})
             .map((k, v) => MapEntry(k, '$v')),
+    sheetCatalogBaseline:
+        (decoded['sheetCatalogBaseline'] as Map<String, dynamic>? ?? const {})
+            .map((k, v) => MapEntry(k, '$v')),
+    inventorySnapshots:
+        (decoded['inventorySnapshots'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(InventoryValueSnapshot.fromJson)
+            .toList(),
+    featureUsage: _decodeFeatureUsageMap(decoded['featureUsage']),
   );
 }
 
@@ -322,5 +421,31 @@ String _encodeSnapshotToJson(ShopDataSnapshot snapshot) {
       'lastAutoBackupAt': snapshot.lastAutoBackupAt,
     if (snapshot.cloudBackupHashes.isNotEmpty)
       'cloudBackupHashes': snapshot.cloudBackupHashes,
+    if (snapshot.sheetCatalogBaseline.isNotEmpty)
+      'sheetCatalogBaseline': snapshot.sheetCatalogBaseline,
+    if (snapshot.inventorySnapshots.isNotEmpty)
+      'inventorySnapshots':
+          snapshot.inventorySnapshots.map((s) => s.toJson()).toList(),
+    if (snapshot.featureUsage.isNotEmpty)
+      'featureUsage': snapshot.featureUsage.map(
+        (k, v) => MapEntry(k, v.toJson()),
+      ),
   });
+}
+
+Map<String, FeatureUsageStat> _decodeFeatureUsageMap(dynamic raw) {
+  if (raw is! Map) return const {};
+  final result = <String, FeatureUsageStat>{};
+  for (final entry in raw.entries) {
+    final key = '${entry.key}'.trim();
+    if (key.isEmpty) continue;
+    if (entry.value is Map<String, dynamic>) {
+      final stat = FeatureUsageStat.fromJson(entry.value as Map<String, dynamic>);
+      if (stat.count > 0) result[key] = stat;
+    } else if (entry.value is num) {
+      final c = (entry.value as num).toInt();
+      if (c > 0) result[key] = FeatureUsageStat(count: c);
+    }
+  }
+  return result;
 }

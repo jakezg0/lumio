@@ -53,7 +53,7 @@ class _DefectReportSheetState extends State<DefectReportSheet> {
       '${strings.defectReportTitle} (${_filterLabel(strings, _filter)})',
       '---',
       for (final e in entries)
-        '• ${e.item.productName}: ${e.item.quantity} × ${formatMoney(e.item.unitCost, currency)} = ${formatMoney(e.item.lineCost, currency)} (${formatDateTime(e.item.createdAt)}, №${e.receiptCode})',
+        '• ${e.item.productName}: ${e.item.quantity} × ${formatMoney(e.item.unitCost, currency)} = ${formatMoney(e.item.lineCost, currency)} (${formatDateTime(e.item.createdAt)}, №${e.receiptCode}${e.item.reason.isNotEmpty ? ', ${e.item.reason}' : ''})',
       '---',
       '${strings.unitsShort(totalUnits)} • ${strings.totalDefectCostLabel}: ${formatMoney(totalCost, currency)}',
     ];
@@ -114,12 +114,16 @@ class _DefectReportSheetState extends State<DefectReportSheet> {
                               fontWeight: FontWeight.bold,
                             ),
                       ),
-                      Text(
-                        '${strings.totalDefectCostLabel}: ${formatMoney(totalCost, currency)}',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.error,
-                            ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          '${strings.totalDefectCostLabel}: ${formatMoney(totalCost, currency)}',
+                          textAlign: TextAlign.end,
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                        ),
                       ),
                     ],
                   ),
@@ -151,7 +155,8 @@ class _DefectReportSheetState extends State<DefectReportSheet> {
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
                           subtitle: Text(
-                            '${item.quantity} × ${formatMoney(item.unitCost, currency)} • ${formatDateTime(item.createdAt)} • №${entry.receiptCode}',
+                            '${item.quantity} × ${formatMoney(item.unitCost, currency)} • ${formatDateTime(item.createdAt)} • №${entry.receiptCode}'
+                            '${item.reason.isNotEmpty ? '\n${strings.returnReasonPrefix}: ${item.reason}' : ''}',
                           ),
                           trailing: Text(
                             formatMoney(item.lineCost, currency),

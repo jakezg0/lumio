@@ -40,22 +40,39 @@ class StockInRecord {
   const StockInRecord({
     required this.id,
     this.supplierName = '',
+    this.currencyCode = '',
+    this.exchangeRate,
     required this.items,
     required this.createdAt,
   });
 
   final String id;
   final String supplierName;
+  final String currencyCode;
+  final double? exchangeRate;
   final List<StockInItem> items;
   final DateTime createdAt;
 
   int get totalUnits => items.fold(0, (sum, item) => sum + item.quantity);
   double get totalCost => items.fold(0.0, (sum, item) => sum + item.lineTotal);
 
+  String get exchangeRateLabel {
+    final code = currencyCode.trim().toUpperCase();
+    final rate = exchangeRate;
+    if (code.isEmpty || rate == null || rate <= 0) return '';
+    final rateStr = rate == rate.roundToDouble()
+        ? rate.toStringAsFixed(0)
+        : rate.toStringAsFixed(2);
+    return '1 $code = $rateStr';
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,
       'supplierName': supplierName,
+      if (currencyCode.trim().isNotEmpty) 'currencyCode': currencyCode.trim(),
+      if (exchangeRate != null && exchangeRate! > 0)
+        'exchangeRate': exchangeRate,
       'items': items.map((i) => i.toJson()).toList(),
       'createdAt': createdAt.toIso8601String(),
     };
@@ -66,6 +83,8 @@ class StockInRecord {
     return StockInRecord(
       id: json['id'] as String,
       supplierName: (json['supplierName'] as String?) ?? '',
+      currencyCode: (json['currencyCode'] as String?) ?? '',
+      exchangeRate: (json['exchangeRate'] as num?)?.toDouble(),
       items: rawItems
           .map((e) => StockInItem.fromJson(e as Map<String, dynamic>))
           .toList(),
@@ -77,6 +96,8 @@ class StockInRecord {
 class StockInDraft {
   const StockInDraft({
     this.supplierName = '',
+    this.currencyCode = '',
+    this.exchangeRate,
     this.recordAsExpense = true,
     this.quantities = const {},
     this.unitCosts = const {},
@@ -84,6 +105,8 @@ class StockInDraft {
   });
 
   final String supplierName;
+  final String currencyCode;
+  final double? exchangeRate;
   final bool recordAsExpense;
   final Map<String, int> quantities;
   final Map<String, double> unitCosts;
@@ -94,11 +117,15 @@ class StockInDraft {
 
   bool get hasContent =>
       supplierName.trim().isNotEmpty ||
+      (exchangeRate != null && exchangeRate! > 0) ||
       quantities.values.any((q) => q > 0);
 
   Map<String, dynamic> toJson() {
     return {
       'supplierName': supplierName,
+      if (currencyCode.trim().isNotEmpty) 'currencyCode': currencyCode.trim(),
+      if (exchangeRate != null && exchangeRate! > 0)
+        'exchangeRate': exchangeRate,
       'recordAsExpense': recordAsExpense,
       'quantities': quantities,
       'unitCosts': unitCosts,
@@ -112,6 +139,8 @@ class StockInDraft {
     final rawSells = json['sellPrices'] as Map<String, dynamic>? ?? const {};
     return StockInDraft(
       supplierName: (json['supplierName'] as String?) ?? '',
+      currencyCode: (json['currencyCode'] as String?) ?? '',
+      exchangeRate: (json['exchangeRate'] as num?)?.toDouble(),
       recordAsExpense: (json['recordAsExpense'] as bool?) ?? true,
       quantities: {
         for (final entry in rawQty.entries)

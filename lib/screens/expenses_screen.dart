@@ -48,6 +48,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   Future<void> _openStockIn() async {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.stockIn);
     final units = await showModalBottomSheet<int>(
       context: context,
       isScrollControlled: true,
@@ -62,6 +63,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   void _openInvoicesSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.invoicesHistory);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -75,6 +77,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   void _openIncomingPricesSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.incomingPrices);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -87,6 +90,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   void _openDefectReportSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.defectReport);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,

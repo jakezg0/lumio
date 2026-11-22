@@ -22,7 +22,10 @@ class StockInSheet extends StatefulWidget {
 }
 
 class _StockInSheetState extends State<StockInSheet> {
+  static const _rateCurrencies = ['USD', 'CNY', 'RUB', 'EUR', 'KZT'];
+
   final _supplierController = TextEditingController();
+  final _rateController = TextEditingController();
   final _searchController = TextEditingController();
   final Map<String, int> _quantities = {};
   final Map<String, double> _unitCosts = {};
@@ -31,14 +34,20 @@ class _StockInSheetState extends State<StockInSheet> {
   final Map<String, TextEditingController> _sellControllers = {};
   final Map<String, TextEditingController> _qtyControllers = {};
   String _searchQuery = '';
+  String _rateCurrency = 'USD';
   bool _recordAsExpense = true;
   String? _lastScannedId;
   String? _scanFeedback;
   bool _scanError = false;
   String? _notFoundSku;
-  final String _lastCalcCurrency = 'USD';
-  final String _lastCalcRate = '';
   bool _addedOnly = false;
+
+  double? get _parsedExchangeRate {
+    final parsed = double.tryParse(
+      _rateController.text.trim().replaceAll(',', '.'),
+    );
+    return (parsed != null && parsed > 0) ? parsed : null;
+  }
 
   @override
   void initState() {
@@ -46,6 +55,16 @@ class _StockInSheetState extends State<StockInSheet> {
     final draft = widget.controller.stockInDraft;
     if (draft != null) {
       _supplierController.text = draft.supplierName;
+      if (draft.currencyCode.isNotEmpty &&
+          _rateCurrencies.contains(draft.currencyCode.toUpperCase())) {
+        _rateCurrency = draft.currencyCode.toUpperCase();
+      }
+      if (draft.exchangeRate != null && draft.exchangeRate! > 0) {
+        final r = draft.exchangeRate!;
+        _rateController.text = r == r.roundToDouble()
+            ? r.toStringAsFixed(0)
+            : r.toStringAsFixed(2);
+      }
       _recordAsExpense = draft.recordAsExpense;
     }
     for (final p in widget.controller.products) {
@@ -78,6 +97,7 @@ class _StockInSheetState extends State<StockInSheet> {
   @override
   void dispose() {
     _supplierController.dispose();
+    _rateController.dispose();
     _searchController.dispose();
     for (final c in _costControllers.values) {
       c.dispose();
@@ -111,6 +131,8 @@ class _StockInSheetState extends State<StockInSheet> {
     widget.controller.saveStockInDraft(
       StockInDraft(
         supplierName: _supplierController.text,
+        currencyCode: _parsedExchangeRate != null ? _rateCurrency : '',
+        exchangeRate: _parsedExchangeRate,
         recordAsExpense: _recordAsExpense,
         quantities: activeQty,
         unitCosts: activeCosts,
@@ -121,9 +143,11 @@ class _StockInSheetState extends State<StockInSheet> {
 
   Future<void> _clearDraft() async {
     _supplierController.clear();
+    _rateController.clear();
     _searchController.clear();
     setState(() {
       _searchQuery = '';
+      _rateCurrency = 'USD';
       _recordAsExpense = true;
       _quantities.clear();
       _lastScannedId = null;
@@ -400,9 +424,12 @@ class _StockInSheetState extends State<StockInSheet> {
         );
       }
     }
+    final rate = _parsedExchangeRate;
     return StockInRecord(
       id: 'draft_${DateTime.now().millisecondsSinceEpoch}',
       supplierName: _supplierController.text.trim(),
+      currencyCode: rate != null ? _rateCurrency : '',
+      exchangeRate: rate,
       items: items,
       createdAt: DateTime.now(),
     );
@@ -459,6 +486,8 @@ class _StockInSheetState extends State<StockInSheet> {
 
     await widget.controller.receiveStock(
       supplierName: _supplierController.text,
+      currencyCode: _parsedExchangeRate != null ? _rateCurrency : '',
+      exchangeRate: _parsedExchangeRate,
       items: items,
       recordAsExpense: _recordAsExpense,
     );
@@ -578,6 +607,50 @@ class _StockInSheetState extends State<StockInSheet> {
               ),
             ),
           ],
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              SizedBox(
+                width: 110,
+                child: DropdownButtonFormField<String>(
+                  initialValue: _rateCurrency,
+                  isDense: true,
+                  decoration: InputDecoration(
+                    labelText: strings.currencyLabel,
+                    border: const OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 10,
+                    ),
+                  ),
+                  items: [
+                    for (final code in _rateCurrencies)
+                      DropdownMenuItem(value: code, child: Text(code)),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() => _rateCurrency = v);
+                    _persistDraft();
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _rateController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => _persistDraft(),
+                  decoration: InputDecoration(
+                    labelText: strings.stockInRateHint,
+                    hintText: '1 $_rateCurrency = ...',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
           Row(
             children: [

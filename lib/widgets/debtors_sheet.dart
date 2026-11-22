@@ -36,10 +36,15 @@ class _DebtorsSheetState extends State<DebtorsSheet> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    strings.debtorsSummaryBtn,
-                    style: Theme.of(context).textTheme.titleLarge,
+                  Expanded(
+                    child: Text(
+                      strings.debtorsSummaryBtn,
+                      style: Theme.of(context).textTheme.titleLarge,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
+                  const SizedBox(width: 8),
                   Text(
                     formatMoney(widget.controller.totalUnpaidDebt, currency),
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -57,12 +62,18 @@ class _DebtorsSheetState extends State<DebtorsSheet> {
                     value: false,
                     label: Text(
                       '${strings.activeDebtorsFilter} (${widget.controller.debtors.length})',
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   ButtonSegment(
                     value: true,
                     label: Text(
                       '${strings.allDebtCustomersFilter} (${widget.controller.allDebtCustomers.length})',
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
@@ -278,12 +289,17 @@ class _DebtorsSheetState extends State<DebtorsSheet> {
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(
-                                        '${formatDateTime(p.date)} • #${p.receiptCode}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
+                                      Expanded(
+                                        child: Text(
+                                          '${formatDateTime(p.date)} • #${p.receiptCode}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
                                       ),
+                                      const SizedBox(width: 8),
                                       Text(
                                         '+${formatMoney(p.amount, currency)}',
                                         style: TextStyle(

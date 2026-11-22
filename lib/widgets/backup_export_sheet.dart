@@ -666,7 +666,7 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
         _preview = preview;
         _includeNewFromSheet = true;
         _includeNewOnPhone = true;
-        if (!preview.hasChanges) {
+        if (!preview.hasChanges && preview.localDuplicates.isEmpty) {
           _statusMessage = strings.syncNoDifferencesMsg;
         }
       });
@@ -710,6 +710,7 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
           }
         },
       );
+      widget.controller.recordSheetCatalogBaseline();
       if (!mounted) return;
       setState(() {
         _preview = null;
@@ -772,6 +773,7 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
         toPush,
         secret: _secretController.text,
       );
+      widget.controller.recordSheetCatalogBaseline();
 
       if (!mounted) return;
       setState(() {
@@ -879,28 +881,33 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
         url: url,
         secret: _secretController.text,
       );
-      for (var i = 0; i < sections.length; i++) {
-        final section = sections[i];
-        final tabCtrl = _sectionTabControllers[section]!;
-        final sheetName = tabCtrl.text.trim().isEmpty
-            ? SheetExportHelper.defaultTabName(section, strings)
-            : tabCtrl.text.trim();
-        if (mounted) {
-          setState(() {
-            _progressText = '${i + 1} / ${sections.length}: $sheetName';
-          });
-        }
-        final table = SheetExportHelper.buildTable(section, widget.controller);
-        await _service.pushTable(
-          webAppUrl: url,
-          sheetName: sheetName,
-          headers: table.headers,
-          rows: table.rows,
-          secret: _secretController.text,
-        );
-        if (i < sections.length - 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 350));
-        }
+      var done = 0;
+      const maxParallel = 4;
+      for (var i = 0; i < sections.length; i += maxParallel) {
+        final end = (i + maxParallel < sections.length)
+            ? i + maxParallel
+            : sections.length;
+        final batch = sections.sublist(i, end);
+        await Future.wait(batch.map((section) async {
+          final tabCtrl = _sectionTabControllers[section]!;
+          final sheetName = tabCtrl.text.trim().isEmpty
+              ? SheetExportHelper.defaultTabName(section, strings)
+              : tabCtrl.text.trim();
+          final table = SheetExportHelper.buildTable(section, widget.controller);
+          await _service.pushTable(
+            webAppUrl: url,
+            sheetName: sheetName,
+            headers: table.headers,
+            rows: table.rows,
+            secret: _secretController.text,
+          );
+          done += 1;
+          if (mounted) {
+            setState(() {
+              _progressText = '$done / ${sections.length}: $sheetName';
+            });
+          }
+        }));
       }
       if (!mounted) return;
       setState(() {
@@ -950,45 +957,59 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
         url: url,
         secret: _secretController.text,
       );
-      await _service.pushProducts(
-        url,
-        widget.controller.products,
-        secret: _secretController.text,
-        onProgress: (sent, total) {
+      final totalSteps = sections.length + 2;
+      var doneSteps = 0;
+      final tasks = <Future<void> Function()>[
+        () async {
+          await _service.pushProducts(
+            url,
+            widget.controller.products,
+            secret: _secretController.text,
+          );
+          doneSteps += 1;
           if (mounted) {
-            setState(() => _progressText = 'Catalog: $sent / $total');
+            setState(() => _progressText = '$doneSteps / $totalSteps: Catalog');
           }
         },
-      );
-      for (var i = 0; i < sections.length; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 350));
-        final section = sections[i];
-        final tabCtrl = _sectionTabControllers[section]!;
-        final sheetName = tabCtrl.text.trim().isEmpty
-            ? SheetExportHelper.defaultTabName(section, strings)
-            : tabCtrl.text.trim();
-        if (mounted) {
-          setState(() {
-            _progressText = '${i + 1} / ${sections.length}: $sheetName';
-          });
-        }
-        final table = SheetExportHelper.buildTable(section, widget.controller);
-        await _service.pushTable(
-          webAppUrl: url,
-          sheetName: sheetName,
-          headers: table.headers,
-          rows: table.rows,
-          secret: _secretController.text,
-        );
+        () async {
+          await widget.controller.syncCloudBackupDelta(
+            forceFull: true,
+            syncReadableSheets: false,
+          );
+          doneSteps += 1;
+          if (mounted) {
+            setState(() => _progressText = '$doneSteps / $totalSteps: Backup');
+          }
+        },
+        for (final section in sections)
+          () async {
+            final tabCtrl = _sectionTabControllers[section]!;
+            final sheetName = tabCtrl.text.trim().isEmpty
+                ? SheetExportHelper.defaultTabName(section, strings)
+                : tabCtrl.text.trim();
+            final table =
+                SheetExportHelper.buildTable(section, widget.controller);
+            await _service.pushTable(
+              webAppUrl: url,
+              sheetName: sheetName,
+              headers: table.headers,
+              rows: table.rows,
+              secret: _secretController.text,
+            );
+            doneSteps += 1;
+            if (mounted) {
+              setState(
+                () => _progressText = '$doneSteps / $totalSteps: $sheetName',
+              );
+            }
+          },
+      ];
+      const maxParallel = 4;
+      for (var i = 0; i < tasks.length; i += maxParallel) {
+        final end =
+            (i + maxParallel < tasks.length) ? i + maxParallel : tasks.length;
+        await Future.wait(tasks.sublist(i, end).map((t) => t()));
       }
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      if (mounted) {
-        setState(() => _progressText = 'Backup...');
-      }
-      await widget.controller.syncCloudBackupDelta(
-        forceFull: true,
-        syncReadableSheets: false,
-      );
       if (!mounted) return;
       setState(() {
         _preview = null;
@@ -1183,7 +1204,11 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                                   ),
                                 )
                               : const Icon(Icons.sync),
-                          label: Text(strings.checkAndSyncBtn),
+                          label: Text(
+                            strings.checkAndSyncBtn,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1195,6 +1220,8 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                             _progressText != null
                                 ? _progressText!
                                 : strings.pushAllToSheetsBtn,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),
@@ -1460,12 +1487,51 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                       ],
                     ),
                   ),
-                  if (preview != null && preview.hasChanges) ...[
+                  if (preview != null &&
+                      (preview.hasChanges ||
+                          preview.localDuplicates.isNotEmpty)) ...[
                     const SizedBox(height: 14),
                     Wrap(
                       spacing: 8,
                       runSpacing: 6,
                       children: [
+                        if (preview.sheetDuplicates.isNotEmpty)
+                          Chip(
+                            avatar: Icon(
+                              Icons.content_copy_rounded,
+                              size: 18,
+                              color: theme.colorScheme.onErrorContainer,
+                            ),
+                            backgroundColor: theme.colorScheme.errorContainer,
+                            label: Text(
+                              strings.sheetDuplicatesCount(
+                                preview.sheetDuplicates.length,
+                              ),
+                              style: TextStyle(
+                                color: theme.colorScheme.onErrorContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        if (preview.localDuplicates.isNotEmpty)
+                          Chip(
+                            avatar: Icon(
+                              Icons.phone_android,
+                              size: 18,
+                              color: theme.colorScheme.onTertiaryContainer,
+                            ),
+                            backgroundColor:
+                                theme.colorScheme.tertiaryContainer,
+                            label: Text(
+                              strings.phoneDuplicatesCount(
+                                preview.localDuplicates.length,
+                              ),
+                              style: TextStyle(
+                                color: theme.colorScheme.onTertiaryContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
                         if (preview.conflicts.isNotEmpty)
                           Chip(
                             avatar: const Icon(
@@ -1501,6 +1567,111 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                           ),
                       ],
                     ),
+                    if (preview.sheetDuplicates.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        color: theme.colorScheme.errorContainer
+                            .withValues(alpha: 0.45),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                strings.sheetDuplicatesCount(
+                                  preview.sheetDuplicates.length,
+                                ),
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.colorScheme.onErrorContainer,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                strings.sheetDuplicatesCleanedNote,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onErrorContainer,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              for (final dup in preview.sheetDuplicates)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text(
+                                    '• ${dup.product.name} (${strings.rowNumberLabel(dup.rowNumber)} = ${strings.rowNumberLabel(dup.firstRowNumber)}, ${dup.reason})',
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (preview.localDuplicates.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        color: theme.colorScheme.tertiaryContainer
+                            .withValues(alpha: 0.45),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                strings.phoneDuplicatesCount(
+                                  preview.localDuplicates.length,
+                                ),
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              for (final group in preview.localDuplicates) ...[
+                                Text(
+                                  group.reason,
+                                  style: theme.textTheme.labelMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                for (final p in group.products)
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          '• ${p.name} (${formatMoney(p.sellPrice, currency)}, ${strings.stockCountLabel(p.stock)})',
+                                          style: theme.textTheme.bodySmall,
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: strings.moveToTrashAction,
+                                        visualDensity: VisualDensity.compact,
+                                        icon: Icon(
+                                          Icons.delete_outline,
+                                          size: 18,
+                                          color: theme.colorScheme.error,
+                                        ),
+                                        onPressed: _busy
+                                            ? null
+                                            : () async {
+                                                await widget.controller
+                                                    .moveProductToTrash(p.id);
+                                                if (mounted) {
+                                                  await _checkAndCompare();
+                                                }
+                                              },
+                                      ),
+                                    ],
+                                  ),
+                                const SizedBox(height: 6),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                     if (preview.conflicts.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Wrap(
@@ -1662,12 +1833,14 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                         ),
                       ),
                     ],
-                    const SizedBox(height: 8),
-                    FilledButton.icon(
-                      onPressed: _busy ? null : _applySync,
-                      icon: const Icon(Icons.check_circle_outline),
-                      label: Text(strings.applySyncBtn),
-                    ),
+                    if (preview.hasChanges) ...[
+                      const SizedBox(height: 8),
+                      FilledButton.icon(
+                        onPressed: _busy ? null : _applySync,
+                        icon: const Icon(Icons.check_circle_outline),
+                        label: Text(strings.applySyncBtn),
+                      ),
+                    ],
                   ],
                 ],
               ),

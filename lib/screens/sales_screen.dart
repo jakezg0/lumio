@@ -51,6 +51,7 @@ class _SalesScreenState extends State<SalesScreen> {
 
 
   void _openDebtorsSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.debtors);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -60,6 +61,7 @@ class _SalesScreenState extends State<SalesScreen> {
   }
 
   void _openCustomersSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.customers);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -69,6 +71,7 @@ class _SalesScreenState extends State<SalesScreen> {
   }
 
   void _openAnalyticsSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.analytics);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -81,6 +84,7 @@ class _SalesScreenState extends State<SalesScreen> {
   }
 
   void _openInvoicesHistorySheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.invoicesHistory);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -93,6 +97,7 @@ class _SalesScreenState extends State<SalesScreen> {
   }
 
   void _openDefectReportSheet() {
+    widget.controller.trackFeatureUsage(FeatureUsageKeys.defectReport);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -420,6 +425,9 @@ class _SalesScreenState extends State<SalesScreen> {
                         IconButton(
                           tooltip: strings.scanReceiptBarcodeTooltip,
                           onPressed: () async {
+                            widget.controller.trackFeatureUsage(
+                              FeatureUsageKeys.barcodeScan,
+                            );
                             final scanned = await Navigator.of(context).push<String>(
                               MaterialPageRoute<String>(
                                 builder: (_) => BarcodeScannerScreen(strings: strings),
@@ -761,19 +769,50 @@ class _SaleDetailSheet extends StatelessWidget {
                           ),
                     ),
                   ),
+                if (sale.returnReason.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '${strings.returnReasonPrefix}: ${sale.returnReason}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                    ),
+                  ),
                 const Divider(height: 20),
                 for (final item in sale.items)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: Text(
-                            '${item.productName} (${item.quantity} × ${formatMoney(item.unitPrice, currency)})',
-                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${item.productName} (${item.quantity} × ${formatMoney(item.unitPrice, currency)})',
+                              ),
+                            ),
+                            Text(formatMoney(item.lineTotal, currency)),
+                          ],
                         ),
-                        Text(formatMoney(item.lineTotal, currency)),
+                        if (!isCashier)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 1),
+                            child: Text(
+                              '${strings.costShort}: ${formatMoney(item.unitCost, currency)}  •  '
+                              '${strings.profitLabel}: ${item.lineProfit >= 0 ? '+' : ''}${formatMoney(item.lineProfit, currency)}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(
+                                    color: item.lineProfit >= 0
+                                        ? Colors.green.shade700
+                                        : Theme.of(context).colorScheme.error,
+                                  ),
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -782,23 +821,48 @@ class _SaleDetailSheet extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(strings.discountLabel),
+                      Expanded(
+                        child: Text(
+                          sale.discountReason.isNotEmpty
+                              ? '${strings.discountLabel} (${sale.discountReason})'
+                              : strings.discountLabel,
+                        ),
+                      ),
                       Text('-${formatMoney(sale.discount, currency)}'),
                     ],
                   ),
                 ],
                 const Divider(height: 20),
+                if (!isCashier) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        strings.costLabel,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      Text(
+                        formatMoney(sale.totalCost, currency),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                ],
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      isCashier
-                          ? strings.totalDue
-                          : strings.totalWithProfit(
-                              formatMoney(sale.profit, currency),
-                            ),
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    Expanded(
+                      child: Text(
+                        isCashier
+                            ? strings.totalDue
+                            : strings.totalWithProfit(
+                                formatMoney(sale.profit, currency),
+                              ),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
                     ),
+                    const SizedBox(width: 8),
                     Text(
                       formatMoney(sale.total, currency),
                       style: const TextStyle(fontWeight: FontWeight.bold),
@@ -904,7 +968,11 @@ class _SaleDetailSheet extends StatelessWidget {
                         child: OutlinedButton(
                           onPressed: () =>
                               _promptPartialPayment(context, sale),
-                          child: Text(strings.addPayment),
+                          child: Text(
+                            strings.addPayment,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -918,7 +986,11 @@ class _SaleDetailSheet extends StatelessWidget {
                               );
                             }
                           },
-                          child: Text(strings.markAsPaid),
+                          child: Text(
+                            strings.markAsPaid,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                     ],
@@ -937,7 +1009,11 @@ class _SaleDetailSheet extends StatelessWidget {
                             }
                           },
                           icon: const Icon(Icons.archive_outlined),
-                          label: Text(strings.archiveAction),
+                          label: Text(
+                            strings.archiveAction,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -950,7 +1026,11 @@ class _SaleDetailSheet extends StatelessWidget {
                             }
                           },
                           icon: const Icon(Icons.delete_outline),
-                          label: Text(strings.moveToTrashAction),
+                          label: Text(
+                            strings.moveToTrashAction,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                     ],
@@ -1268,6 +1348,7 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
   final Map<String, double> _exchangePrices = {};
   final _refundAmountCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
+  final _reasonCtrl = TextEditingController();
   String _productQuery = '';
 
   @override
@@ -1283,6 +1364,7 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
   void dispose() {
     _refundAmountCtrl.dispose();
     _productSearchCtrl.dispose();
+    _reasonCtrl.dispose();
     super.dispose();
   }
 
@@ -1371,6 +1453,7 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
       exchangeItems: exchangeList,
       returnToStock: _returnToStock,
       settlementMethod: _settlementMethod,
+      returnReason: _reasonCtrl.text,
     );
     if (mounted) {
       Navigator.of(context).pop(true);
@@ -1539,6 +1622,46 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
                   },
                 ),
               ],
+              const SizedBox(height: 10),
+              TextField(
+                controller: _reasonCtrl,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: strings.returnReasonLabel,
+                  prefixIcon: const Icon(Icons.comment_outlined, size: 18),
+                  suffixIcon: _reasonCtrl.text.trim().isNotEmpty
+                      ? IconButton(
+                          onPressed: () {
+                            _reasonCtrl.clear();
+                            setState(() {});
+                          },
+                          icon: const Icon(Icons.clear, size: 18),
+                        )
+                      : null,
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final preset in (_returnToStock
+                      ? strings.returnReasonPresets
+                      : strings.defectReasonPresets))
+                    ChoiceChip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text(preset),
+                      selected: _reasonCtrl.text.trim() == preset,
+                      onSelected: (selected) {
+                        setState(() {
+                          _reasonCtrl.text = selected ? preset : '';
+                        });
+                      },
+                    ),
+                ],
+              ),
               if (!_isExchange) ...[
                 const SizedBox(height: 10),
                 TextField(

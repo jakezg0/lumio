@@ -1,14 +1,18 @@
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'screens/expenses_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/pos_screen.dart';
 import 'screens/sales_screen.dart';
 import 'state/shop_controller.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
   runApp(const ShopInventoryApp());
 }
 
@@ -24,11 +28,14 @@ class ShopInventoryApp extends StatefulWidget {
 class _ShopInventoryAppState extends State<ShopInventoryApp>
     with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  final GlobalKey<ScaffoldMessengerState> _scaffoldMessengerKey =
+      GlobalKey<ScaffoldMessengerState>();
   late final ShopController _controller;
   int _currentIndex = 0;
   bool _reminderDialogOpen = false;
   bool _initialReminderChecked = false;
   DateTime? _lastReminderShownAt;
+  int _lastHandledSyncNoticeVersion = 0;
 
   @override
   void initState() {
@@ -46,12 +53,32 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
         _maybeShowNegativeStockReminder(force: true);
       });
     }
+    if (_controller.syncNoticeVersion != _lastHandledSyncNoticeVersion) {
+      _lastHandledSyncNoticeVersion = _controller.syncNoticeVersion;
+      final notice = _controller.lastSheetSyncNotice;
+      final isError = _controller.lastSheetSyncIsError;
+      if (notice.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final messenger = _scaffoldMessengerKey.currentState;
+          if (messenger == null) return;
+          messenger.hideCurrentSnackBar();
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(notice),
+              backgroundColor: isError ? Colors.red.shade700 : null,
+              duration: Duration(seconds: isError ? 5 : 3),
+            ),
+          );
+        });
+      }
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _controller.isLoaded) {
       _maybeShowNegativeStockReminder(force: true);
+      _controller.syncFromSheetInBackground();
     } else if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive) &&
         _controller.isLoaded) {
@@ -200,6 +227,7 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
   Widget build(BuildContext context) {
     return MaterialApp(
       navigatorKey: _navigatorKey,
+      scaffoldMessengerKey: _scaffoldMessengerKey,
       title: 'Lumio',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -230,10 +258,64 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
 
           return Scaffold(
             resizeToAvoidBottomInset: false,
-            body: screens[safeIndex],
+            body: Column(
+              children: [
+                if (_controller.isSyncing)
+                  Material(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 6,
+                        ),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                strings.syncingWithSheetsStatus,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onPrimaryContainer,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                Expanded(child: screens[safeIndex]),
+              ],
+            ),
             bottomNavigationBar: NavigationBar(
               selectedIndex: safeIndex,
               onDestinationSelected: (index) {
+                if (index != _currentIndex) {
+                  const tabKeys = [
+                    FeatureUsageKeys.tabGoods,
+                    FeatureUsageKeys.tabSell,
+                    FeatureUsageKeys.tabSales,
+                    FeatureUsageKeys.tabExpenses,
+                  ];
+                  if (index >= 0 && index < tabKeys.length) {
+                    _controller.trackFeatureUsage(tabKeys[index]);
+                  }
+                }
                 setState(() => _currentIndex = index);
                 if (index != 0) {
                   _maybeShowNegativeStockReminder();
