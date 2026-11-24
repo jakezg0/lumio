@@ -4,15 +4,106 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../l10n/app_strings.dart';
 import '../models/product.dart';
+import '../services/catalog_health_service.dart';
+import '../services/daily_local_backup_service.dart';
 import '../services/export_service.dart';
 import '../services/google_sheets_service.dart';
+import '../services/inventory_storage.dart';
 import '../services/sheet_export_helper.dart';
 import '../state/shop_controller.dart';
 import 'formatters.dart';
 
+Future<void> shareJsonBackupOutsidePhone(
+  BuildContext context,
+  ShopController controller,
+) async {
+  await controller.ensureFullHistoryLoaded();
+  final strings = controller.strings;
+  final stamp = DateTime.now().toIso8601String().split('T').first;
+  final jsonContent = ExportService.buildBackupJson(
+    controller.createBackupSnapshot(),
+  );
+  final bytes = Uint8List.fromList(utf8.encode(jsonContent));
+  await Share.shareXFiles(
+    [
+      XFile.fromData(
+        bytes,
+        name: 'lumio_backup_$stamp.json',
+        mimeType: 'application/json',
+      ),
+    ],
+    subject: 'Lumio Backup ($stamp)',
+  );
+  await controller.markExternalBackupSaved();
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(strings.externalBackupOpenedMsg)),
+    );
+  }
+}
+
+Future<bool> confirmAndRollbackRestore(
+  BuildContext context,
+  ShopController controller,
+) async {
+  final strings = controller.strings;
+  final savedAt = controller.preRestoreBackupAt;
+  final prettyDate = savedAt != null ? formatDateTime(savedAt) : null;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      icon: const Icon(Icons.restore),
+      title: Text(strings.rollbackRestoreTitle),
+      content: Text(strings.rollbackRestoreBody(prettyDate)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text(strings.cancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: Text(strings.confirm),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true) return false;
+  final ok = await controller.rollbackToPreRestoreBackup();
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok ? strings.rollbackRestoredMsg : strings.noPreRestoreBackupMsg,
+        ),
+      ),
+    );
+  }
+  return ok;
+}
+
 class BackupExportSheet extends StatelessWidget {
-  const BackupExportSheet({super.key, required this.controller});
+  const BackupExportSheet({
+    super.key,
+    required this.controller,
+    this.initiallyExpandManualBackup = false,
+  });
+
+  final ShopController controller;
+  final bool initiallyExpandManualBackup;
+
+  @override
+  Widget build(BuildContext context) {
+    return GoogleSheetsSheet(
+      controller: controller,
+      initiallyExpandManualBackup: initiallyExpandManualBackup,
+    );
+  }
+}
+
+class _ManualBackupExportSection extends StatelessWidget {
+  const _ManualBackupExportSection({required this.controller});
 
   final ShopController controller;
 
@@ -77,21 +168,41 @@ class BackupExportSheet extends StatelessWidget {
     );
 
     if (raw == null || raw.trim().isEmpty) return;
+    final ShopDataSnapshot snapshot;
     try {
-      final snapshot = ExportService.parseBackupJson(raw);
-      await controller.restoreFromSnapshot(snapshot);
-      if (context.mounted) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.backupRestoredMsg)),
-        );
-      }
+      snapshot = ExportService.parseBackupJson(raw);
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(strings.invalidBackupMsg)),
         );
       }
+      return;
+    }
+
+    if (!context.mounted) return;
+    final includeSettings = await showDialog<bool>(
+      context: context,
+      builder: (_) => _RestoreScopeDialog(
+        strings: strings,
+        title: strings.restoreScopeTitle,
+      ),
+    );
+    if (includeSettings == null) return;
+
+    await controller.restoreFromSnapshot(
+      snapshot,
+      includeSettings: includeSettings,
+    );
+    if (context.mounted) {
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${strings.backupRestoredMsg}. ${strings.preRestoreBackupSavedNote}',
+          ),
+        ),
+      );
     }
   }
 
@@ -100,18 +211,10 @@ class BackupExportSheet extends StatelessWidget {
     final strings = controller.strings;
     final stamp = DateTime.now().toIso8601String().split('T').first;
 
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              strings.backupAndExport,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 12),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
             FilledButton.icon(
               onPressed: () => _exportAndCopy(
                 context,
@@ -172,14 +275,24 @@ class BackupExportSheet extends StatelessWidget {
               label: Text(strings.exportSalesCsv),
             ),
             const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed: () => shareJsonBackupOutsidePhone(context, controller),
+              icon: const Icon(Icons.cloud_upload_outlined),
+              label: Text(strings.saveBackupOutsidePhoneBtn),
+            ),
+            const SizedBox(height: 8),
             FilledButton.tonalIcon(
-              onPressed: () => _exportAndCopy(
-                context,
-                filename: 'shop_backup_$stamp.json',
-                content: ExportService.buildBackupJson(
-                  controller.createBackupSnapshot(),
-                ),
-              ),
+              onPressed: () async {
+                await controller.ensureFullHistoryLoaded();
+                if (!context.mounted) return;
+                await _exportAndCopy(
+                  context,
+                  filename: 'shop_backup_$stamp.json',
+                  content: ExportService.buildBackupJson(
+                    controller.createBackupSnapshot(),
+                  ),
+                );
+              },
               icon: const Icon(Icons.save_alt_outlined),
               label: Text(strings.exportJsonBackup),
             ),
@@ -189,9 +302,358 @@ class BackupExportSheet extends StatelessWidget {
               icon: const Icon(Icons.restore_page_outlined),
               label: Text(strings.restoreJsonBackup),
             ),
-          ],
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final restored = await showDialog<bool>(
+                  context: context,
+                  builder: (_) =>
+                      _DailyLocalBackupsDialog(controller: controller),
+                );
+                if (restored == true && context.mounted) {
+                  Navigator.of(context).pop();
+                }
+              },
+              icon: const Icon(Icons.history_toggle_off),
+              label: Text(strings.dailyLocalBackupsBtn),
+            ),
+            if (controller.hasPreRestoreBackup) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () async {
+                  final ok = await confirmAndRollbackRestore(context, controller);
+                  if (ok && context.mounted) {
+                    Navigator.of(context).pop();
+                  }
+                },
+                icon: const Icon(Icons.undo, size: 18),
+                label: Text(strings.rollbackLastRestoreBtn),
+              ),
+            ],
+            if (!controller.cashierMode) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () => showDialog<void>(
+                  context: context,
+                  builder: (_) => _YearEndArchiveDialog(controller: controller),
+                ),
+                icon: const Icon(Icons.inventory_2_outlined),
+                label: Text(strings.yearEndArchiveBtn),
+              ),
+            ],
+      ],
+    );
+  }
+}
+
+class _DailyLocalBackupsDialog extends StatefulWidget {
+  const _DailyLocalBackupsDialog({required this.controller});
+
+  final ShopController controller;
+
+  @override
+  State<_DailyLocalBackupsDialog> createState() =>
+      _DailyLocalBackupsDialogState();
+}
+
+class _DailyLocalBackupsDialogState extends State<_DailyLocalBackupsDialog> {
+  late Future<List<DailyBackupEntry>> _future;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.controller.listDailyLocalBackups();
+  }
+
+  void _reload() {
+    setState(() { _future = widget.controller.listDailyLocalBackups(); });
+  }
+
+  Future<void> _saveNow() async {
+    final strings = widget.controller.strings;
+    setState(() => _busy = true);
+    try {
+      await widget.controller.createDailyLocalBackupNow();
+      _reload();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(strings.dailyBackupSavedMsg)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _restoreEntry(DailyBackupEntry entry) async {
+    final strings = widget.controller.strings;
+    final includeSettings = await showDialog<bool>(
+      context: context,
+      builder: (_) => _RestoreScopeDialog(
+        strings: strings,
+        title: strings.restoreScopeTitle,
+      ),
+    );
+    if (includeSettings == null || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final ok = await widget.controller.restoreFromDailyLocalBackup(
+        entry,
+        includeSettings: includeSettings,
+      );
+      if (!mounted) return;
+      if (ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${strings.backupRestoredMsg}. ${strings.preRestoreBackupSavedNote}',
+            ),
+          ),
+        );
+        Navigator.of(context).pop(true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(strings.invalidBackupMsg)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = widget.controller.strings;
+    return AlertDialog(
+      title: Text(strings.dailyLocalBackupsTitle),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                strings.dailyLocalBackupsDesc,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: _busy ? null : _saveNow,
+                icon: const Icon(Icons.save_outlined, size: 18),
+                label: Text(strings.saveDailyBackupNowBtn),
+              ),
+              const SizedBox(height: 12),
+              FutureBuilder<List<DailyBackupEntry>>(
+                future: _future,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final items = snapshot.data ?? const <DailyBackupEntry>[];
+                  if (items.isEmpty) {
+                    return Text(strings.noDailyLocalBackupsMsg);
+                  }
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final entry in items)
+                        Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.archive_outlined),
+                            title: Text(entry.dateKey),
+                            subtitle: Text(
+                              '${formatDateTime(entry.modifiedAt)} • ${(entry.sizeBytes / 1024).toStringAsFixed(1)} KB',
+                            ),
+                            trailing: IconButton(
+                              tooltip: strings.restoreAction,
+                              onPressed: _busy ? null : () => _restoreEntry(entry),
+                              icon: const Icon(Icons.restore),
+                            ),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+          child: Text(strings.close),
+        ),
+      ],
+    );
+  }
+}
+
+class _YearEndArchiveDialog extends StatefulWidget {
+  const _YearEndArchiveDialog({required this.controller});
+
+  final ShopController controller;
+
+  @override
+  State<_YearEndArchiveDialog> createState() => _YearEndArchiveDialogState();
+}
+
+class _YearEndArchiveDialogState extends State<_YearEndArchiveDialog> {
+  bool _busy = false;
+  String? _status;
+
+  Future<void> _exportYear(int year, {required bool compress}) async {
+    final ctrl = widget.controller;
+    final strings = ctrl.strings;
+    final rawSales = ctrl.rawSalesForYear(year);
+    final rawStockIns = ctrl.rawStockInsForYear(year);
+
+    setState(() {
+      _busy = true;
+      _status = null;
+    });
+
+    try {
+      final saved = await ExportService.saveYearArchiveFiles(
+        year: year,
+        sales: rawSales,
+        stockIns: rawStockIns,
+        currency: ctrl.currency,
+      );
+      await Share.shareXFiles(
+        [
+          XFile(saved.jsonPath, mimeType: 'application/json'),
+          XFile(saved.csvPath, mimeType: 'text/csv'),
+        ],
+        subject: 'Lumio Archive $year',
+      );
+      if (compress) {
+        final res = await ctrl.archiveAndCompressYear(year);
+        if (!mounted) return;
+        final msg = StringBuffer(
+          strings.yearCompressedMsg(
+            year,
+            res.compressedSales,
+            res.compressedStockIns,
+          ),
+        );
+        if (res.keptUnpaidSales > 0) {
+          msg.write(' ${strings.unpaidDebtsKeptNote(res.keptUnpaidSales)}');
+        }
+        setState(() => _status = msg.toString());
+      } else {
+        if (!mounted) return;
+        setState(() => _status = strings.savedToPathMsg(saved.jsonPath));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = widget.controller;
+    final strings = ctrl.strings;
+    final years = ctrl.archivablePastYears;
+
+    return AlertDialog(
+      title: Text(strings.yearEndArchiveTitle),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                strings.yearEndArchiveDesc,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              if (years.isEmpty)
+                Text(strings.noPastYearsToArchiveMsg)
+              else
+                for (final y in years)
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            strings.yearSummaryLine(
+                              y.year,
+                              y.salesCount,
+                              y.stockInsCount,
+                            ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          if (y.unpaidSalesCount > 0) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              strings.unpaidDebtsKeptNote(y.unpaidSalesCount),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(context).colorScheme.error,
+                                  ),
+                            ),
+                          ],
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => _exportYear(y.year, compress: false),
+                            icon: const Icon(Icons.download_outlined, size: 18),
+                            label: Text(strings.exportArchiveOnlyBtn),
+                          ),
+                          const SizedBox(height: 6),
+                          FilledButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => _exportYear(y.year, compress: true),
+                            icon: const Icon(Icons.compress, size: 18),
+                            label: Text(strings.exportAndCompressYearBtn),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              if (_status != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _status!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: Text(strings.close),
+        ),
+      ],
     );
   }
 }
@@ -210,6 +672,7 @@ class _TableImportSheetState extends State<_TableImportSheet> {
   final GoogleSheetsService _syncService = const GoogleSheetsService();
 
   SheetSyncPreview? _preview;
+  List<CatalogHealthIssue> _healthIssues = const [];
   String? _error;
   bool _includeNew = true;
 
@@ -244,6 +707,7 @@ class _TableImportSheetState extends State<_TableImportSheet> {
     if (parsed.isEmpty) {
       setState(() {
         _preview = null;
+        _healthIssues = const [];
         _error = strings.importNoRowsMsg;
       });
       return;
@@ -255,8 +719,10 @@ class _TableImportSheetState extends State<_TableImportSheet> {
       strings: strings,
       currency: widget.controller.currency,
     );
+    final healthIssues = CatalogHealthService.analyze(parsed);
     setState(() {
       _preview = preview;
+      _healthIssues = healthIssues;
       _includeNew = true;
       _error = preview.conflicts.isEmpty && preview.onlyInSheet.isEmpty
           ? strings.syncNoDifferencesMsg
@@ -369,6 +835,39 @@ class _TableImportSheetState extends State<_TableImportSheet> {
                         _error!,
                         style: TextStyle(
                           color: theme.colorScheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (_healthIssues.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Card(
+                      margin: EdgeInsets.zero,
+                      color: theme.colorScheme.errorContainer
+                          .withValues(alpha: 0.55),
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              strings.importHealthWarningTitle(
+                                _healthIssues.length,
+                              ),
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: theme.colorScheme.onErrorContainer,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            for (final issue in _healthIssues.take(8))
+                              Text(
+                                '• ${issue.product.name}: ${switch (issue.type) { CatalogHealthIssueType.emptyName => strings.healthEmptyName, CatalogHealthIssueType.zeroPrice => strings.healthZeroPrice, CatalogHealthIssueType.sellBelowCost => strings.healthSellBelowCost, CatalogHealthIssueType.duplicateBarcode => '${strings.healthDuplicateBarcode} (${issue.detail})', CatalogHealthIssueType.negativeStock => '${strings.healthNegativeStock} (${issue.detail})' }}',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onErrorContainer,
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     ),
@@ -558,9 +1057,14 @@ class _RestoreJsonDialogState extends State<_RestoreJsonDialog> {
 }
 
 class GoogleSheetsSheet extends StatefulWidget {
-  const GoogleSheetsSheet({super.key, required this.controller});
+  const GoogleSheetsSheet({
+    super.key,
+    required this.controller,
+    this.initiallyExpandManualBackup = false,
+  });
 
   final ShopController controller;
+  final bool initiallyExpandManualBackup;
 
   @override
   State<GoogleSheetsSheet> createState() => _GoogleSheetsSheetState();
@@ -680,7 +1184,10 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
     }
   }
 
-  Future<void> _pushAllToSheet() async {
+  Future<void> _pushAllToSheet({
+    bool allowShrinkOverride = false,
+    bool allowTimestampOverride = false,
+  }) async {
     final strings = widget.controller.strings;
     final url = _urlController.text.trim();
     if (url.isEmpty) {
@@ -700,6 +1207,40 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
         url: url,
         secret: _secretController.text,
       );
+      if (!allowShrinkOverride && !widget.controller.isBulkDeleteAuthorized) {
+        final localAnomaly =
+            widget.controller.detectCloudBackupShrinkAnomaly();
+        if (localAnomaly != null) {
+          throw localAnomaly;
+        }
+        if (widget.controller.lastCloudBackupProductsCount < 0 ||
+            widget.controller.products.length <= 3) {
+          final remoteProducts = await _service.fetchProducts(
+            url,
+            secret: _secretController.text,
+          );
+          final remoteAnomaly =
+              widget.controller.detectRemoteCatalogShrinkAnomaly(
+            GoogleSheetsService.deduplicateProducts(remoteProducts).length,
+          );
+          if (remoteAnomaly != null) {
+            throw remoteAnomaly;
+          }
+        }
+      }
+      if (!allowTimestampOverride) {
+        final meta = await _service.fetchCloudBackupMeta(
+          url,
+          secret: _secretController.text,
+        );
+        final tsConflict = widget.controller.detectCloudNewerThanLocal(
+          remoteBackupUpdatedAt: meta.updatedAt,
+          remoteCatalogUpdatedAt: meta.catalogUpdatedAt,
+        );
+        if (tsConflict != null) {
+          throw tsConflict;
+        }
+      }
       final pushedCount = await _service.pushProducts(
         url,
         widget.controller.products,
@@ -710,13 +1251,39 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
           }
         },
       );
-      widget.controller.recordSheetCatalogBaseline();
+      await widget.controller.markCloudCatalogPushed();
       if (!mounted) return;
       setState(() {
         _preview = null;
         _progressText = null;
         _statusMessage = '${strings.syncCompletedMsg} ($pushedCount)';
       });
+    } on CloudBackupShrinkException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _progressText = null;
+        _error = '$e';
+      });
+      final retry = await _confirmShrinkOverride(e);
+      if (retry && mounted) {
+        await _pushAllToSheet(
+          allowShrinkOverride: true,
+          allowTimestampOverride: allowTimestampOverride,
+        );
+      }
+    } on CloudTimestampConflictException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _progressText = null;
+        _error = '$e';
+      });
+      final retry = await _confirmTimestampOverride(e);
+      if (retry && mounted) {
+        await _pushAllToSheet(
+          allowShrinkOverride: allowShrinkOverride,
+          allowTimestampOverride: true,
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -936,7 +1503,80 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
     }
   }
 
-  Future<void> _pushCatalogAndAllSections() async {
+  Future<bool> _confirmShrinkOverride(CloudBackupShrinkException e) async {
+    final strings = widget.controller.strings;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(
+          Icons.warning_amber_rounded,
+          color: Theme.of(ctx).colorScheme.error,
+        ),
+        title: Text(strings.cloudBackupShrinkWarningTitle),
+        content: Text(e.message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(strings.cloudBackupOverrideBtn),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  Future<bool> _confirmTimestampOverride(
+    CloudTimestampConflictException e,
+  ) async {
+    final strings = widget.controller.strings;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(
+          Icons.schedule_send_outlined,
+          color: Theme.of(ctx).colorScheme.error,
+        ),
+        title: Text(
+          e.isCloudNewer
+              ? strings.cloudNewerWarningTitle
+              : strings.localNewerWarningTitle,
+        ),
+        content: Text(e.message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              e.isCloudNewer
+                  ? strings.overwriteCloudAnywayBtn
+                  : strings.restoreOlderCloudAnywayBtn,
+            ),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  Future<void> _pushCatalogAndAllSections({
+    bool allowShrinkOverride = false,
+    bool allowTimestampOverride = false,
+  }) async {
     final strings = widget.controller.strings;
     final url = _urlController.text.trim();
     if (url.isEmpty) {
@@ -959,6 +1599,18 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
       );
       final totalSteps = sections.length + 2;
       var doneSteps = 0;
+      // Validate & upload _Backup first so Catalog and section tabs are never
+      // overwritten if shrink / empty-over-populated / timestamp protection triggers.
+      await widget.controller.syncCloudBackupDelta(
+        forceFull: true,
+        syncReadableSheets: false,
+        allowShrinkOverride: allowShrinkOverride,
+        allowTimestampOverride: allowTimestampOverride,
+      );
+      doneSteps += 1;
+      if (mounted) {
+        setState(() => _progressText = '$doneSteps / $totalSteps: Backup');
+      }
       final tasks = <Future<void> Function()>[
         () async {
           await _service.pushProducts(
@@ -969,16 +1621,6 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
           doneSteps += 1;
           if (mounted) {
             setState(() => _progressText = '$doneSteps / $totalSteps: Catalog');
-          }
-        },
-        () async {
-          await widget.controller.syncCloudBackupDelta(
-            forceFull: true,
-            syncReadableSheets: false,
-          );
-          doneSteps += 1;
-          if (mounted) {
-            setState(() => _progressText = '$doneSteps / $totalSteps: Backup');
           }
         },
         for (final section in sections)
@@ -1019,6 +1661,32 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.allCatalogAndSectionsSyncedMsg)),
       );
+    } on CloudBackupShrinkException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _progressText = null;
+        _error = '$e';
+      });
+      final retry = await _confirmShrinkOverride(e);
+      if (retry && mounted) {
+        await _pushCatalogAndAllSections(
+          allowShrinkOverride: true,
+          allowTimestampOverride: allowTimestampOverride,
+        );
+      }
+    } on CloudTimestampConflictException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _progressText = null;
+        _error = '$e';
+      });
+      final retry = await _confirmTimestampOverride(e);
+      if (retry && mounted) {
+        await _pushCatalogAndAllSections(
+          allowShrinkOverride: allowShrinkOverride,
+          allowTimestampOverride: true,
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1038,7 +1706,7 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
     }
   }
 
-  Future<void> _restoreAllFromSheets() async {
+  Future<void> _restoreAllFromSheets({bool usePrevious = false}) async {
     final strings = widget.controller.strings;
     final url = _urlController.text.trim();
     if (url.isEmpty) {
@@ -1060,51 +1728,57 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
       final res = await _service.fetchCloudBackup(
         url,
         secret: _secretController.text,
+        usePreviousBackup: usePrevious,
       );
       if (!mounted) return;
       if (res.snapshot == null) {
-        setState(() => _error = strings.noCloudBackupMsg);
+        final emptyMsg = usePrevious
+            ? strings.noPrevCloudBackupMsg
+            : strings.noCloudBackupMsg;
+        setState(() => _error = emptyMsg);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.noCloudBackupMsg)),
+          SnackBar(content: Text(emptyMsg)),
         );
         return;
       }
 
-      String? prettyDate = res.updatedAt;
-      if (prettyDate != null && prettyDate.isNotEmpty) {
-        final parsed = DateTime.tryParse(prettyDate);
-        if (parsed != null) {
-          prettyDate = formatDateTime(parsed);
-        }
+      final remoteDate = DateTime.tryParse((res.updatedAt ?? '').trim());
+      final localNewerConflict = widget.controller.detectLocalNewerThanCloud(
+        remoteBackupUpdatedAt: remoteDate,
+      );
+      if (localNewerConflict != null) {
+        final proceed = await _confirmTimestampOverride(localNewerConflict);
+        if (!proceed || !mounted) return;
       }
 
-      final confirmed = await showDialog<bool>(
+      String? prettyDate = res.updatedAt;
+      if (prettyDate != null && prettyDate.isNotEmpty && remoteDate != null) {
+        prettyDate = formatDateTime(remoteDate);
+      }
+
+      final includeSettings = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text(strings.restoreAllConfirmTitle),
-          content: Text(strings.restoreAllConfirmBody(prettyDate)),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(strings.cancel),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(strings.confirm),
-            ),
-          ],
+        builder: (_) => _RestoreScopeDialog(
+          strings: strings,
+          title: strings.restoreAllConfirmTitle,
+          description: strings.restoreAllConfirmBody(prettyDate),
         ),
       );
-      if (confirmed != true || !mounted) return;
+      if (includeSettings == null || !mounted) return;
 
-      await widget.controller.restoreFromSnapshot(res.snapshot!);
+      await widget.controller.restoreFromSnapshot(
+        res.snapshot!,
+        includeSettings: includeSettings,
+      );
       if (!mounted) return;
+      final doneMsg =
+          '${strings.backupRestoredMsg}. ${strings.preRestoreBackupSavedNote}';
       setState(() {
         _preview = null;
-        _statusMessage = strings.backupRestoredMsg;
+        _statusMessage = doneMsg;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.backupRestoredMsg)),
+        SnackBar(content: Text(doneMsg)),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1138,7 +1812,7 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
               children: [
                 Expanded(
                   child: Text(
-                    strings.googleSheetsBtn,
+                    strings.syncAndBackupTitle,
                     style: theme.textTheme.titleLarge,
                   ),
                 ),
@@ -1153,6 +1827,25 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
             Expanded(
               child: ListView(
                 children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.cloud_sync_outlined,
+                        size: 20,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          strings.autoSyncGoogleSheetsSection,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
                   TextField(
                     controller: _urlController,
                     keyboardType: TextInputType.url,
@@ -1239,10 +1932,38 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
-                    onPressed: _busy ? null : _restoreAllFromSheets,
+                    onPressed: _busy ? null : () => _restoreAllFromSheets(),
                     icon: const Icon(Icons.cloud_download_outlined),
                     label: Text(strings.restoreAllFromSheetsBtn),
                   ),
+                  const SizedBox(height: 4),
+                  TextButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _restoreAllFromSheets(usePrevious: true),
+                    icon: const Icon(Icons.history, size: 18),
+                    label: Text(strings.restorePrevFromSheetsBtn),
+                  ),
+                  if (widget.controller.hasPreRestoreBackup)
+                    TextButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : () async {
+                              final ok = await confirmAndRollbackRestore(
+                                context,
+                                widget.controller,
+                              );
+                              if (ok && mounted) {
+                                setState(() {
+                                  _preview = null;
+                                  _error = null;
+                                  _statusMessage = strings.rollbackRestoredMsg;
+                                });
+                              }
+                            },
+                      icon: const Icon(Icons.undo, size: 18),
+                      label: Text(strings.rollbackLastRestoreBtn),
+                    ),
                   const SizedBox(height: 8),
                   ListenableBuilder(
                     listenable: widget.controller,
@@ -1250,9 +1971,13 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                       final lastRaw = widget.controller.lastAutoBackupAt;
                       final lastErr = widget.controller.lastAutoBackupError;
                       final inProgress = widget.controller.autoBackupInProgress;
+                      final pending = widget.controller.pendingSync;
                       String subtitle = strings.autoBackupHint;
                       if (inProgress) {
                         subtitle = '${strings.autoBackupHint}\nОтправка изменений...';
+                      } else if (pending) {
+                        subtitle =
+                            '${strings.autoBackupHint}\n${strings.pendingSyncStatus}';
                       } else if (lastRaw.isNotEmpty) {
                         final dt = DateTime.tryParse(lastRaw);
                         if (dt != null) {
@@ -1328,7 +2053,7 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                                               .syncCloudBackupDelta(
                                             forceFull: false,
                                           );
-                                          if (!mounted) return;
+                                          if (!context.mounted) return;
                                           final msg = sent > 0
                                               ? 'Автобэкап выполнен (обновлено блоков: $sent)'
                                               : 'Все изменения уже сохранены в _Backup';
@@ -1337,8 +2062,58 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                                               .showSnackBar(
                                             SnackBar(content: Text(msg)),
                                           );
+                                        } on CloudBackupShrinkException catch (e) {
+                                          if (!context.mounted) return;
+                                          setState(() => _error = '$e');
+                                          final retry =
+                                              await _confirmShrinkOverride(e);
+                                          if (retry && context.mounted) {
+                                            final sent = await widget.controller
+                                                .syncCloudBackupDelta(
+                                              forceFull: false,
+                                              allowShrinkOverride: true,
+                                            );
+                                            if (!context.mounted) return;
+                                            final msg = sent > 0
+                                                ? 'Автобэкап выполнен (обновлено блоков: $sent)'
+                                                : 'Все изменения уже сохранены в _Backup';
+                                            setState(() {
+                                              _error = null;
+                                              _statusMessage = msg;
+                                            });
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(content: Text(msg)),
+                                            );
+                                          }
+                                        } on CloudTimestampConflictException catch (e) {
+                                          if (!context.mounted) return;
+                                          setState(() => _error = '$e');
+                                          final retry =
+                                              await _confirmTimestampOverride(
+                                            e,
+                                          );
+                                          if (retry && context.mounted) {
+                                            final sent = await widget.controller
+                                                .syncCloudBackupDelta(
+                                              forceFull: false,
+                                              allowTimestampOverride: true,
+                                            );
+                                            if (!context.mounted) return;
+                                            final msg = sent > 0
+                                                ? 'Автобэкап выполнен (обновлено блоков: $sent)'
+                                                : 'Все изменения уже сохранены в _Backup';
+                                            setState(() {
+                                              _error = null;
+                                              _statusMessage = msg;
+                                            });
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(content: Text(msg)),
+                                            );
+                                          }
                                         } catch (e) {
-                                          if (!mounted) return;
+                                          if (!context.mounted) return;
                                           setState(() => _error = '$e');
                                           ScaffoldMessenger.of(context)
                                               .showSnackBar(
@@ -1842,12 +2617,116 @@ class _GoogleSheetsSheetState extends State<GoogleSheetsSheet> {
                       ),
                     ],
                   ],
+                  const SizedBox(height: 16),
+                  Card(
+                    margin: EdgeInsets.zero,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                        color: theme.colorScheme.outlineVariant,
+                      ),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: ExpansionTile(
+                      initiallyExpanded: widget.initiallyExpandManualBackup,
+                      leading: const Icon(Icons.import_export, size: 22),
+                      title: Text(
+                        strings.manualBackupExportSection,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Text(
+                        strings.manualBackupExportSubtitle,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      childrenPadding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                      shape: const Border(),
+                      collapsedShape: const Border(),
+                      children: [
+                        _ManualBackupExportSection(controller: widget.controller),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _RestoreScopeDialog extends StatefulWidget {
+  const _RestoreScopeDialog({
+    required this.strings,
+    required this.title,
+    this.description,
+  });
+
+  final AppStrings strings;
+  final String title;
+  final String? description;
+
+  @override
+  State<_RestoreScopeDialog> createState() => _RestoreScopeDialogState();
+}
+
+class _RestoreScopeDialogState extends State<_RestoreScopeDialog> {
+  bool _includeSettings = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = widget.strings;
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (widget.description != null && widget.description!.isNotEmpty) ...[
+              Text(widget.description!),
+              const SizedBox(height: 12),
+            ],
+            RadioGroup<bool>(
+              groupValue: _includeSettings,
+              onChanged: (v) {
+                if (v != null) setState(() => _includeSettings = v);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  RadioListTile<bool>(
+                    contentPadding: EdgeInsets.zero,
+                    value: false,
+                    title: Text(strings.restoreDataOnlyOption),
+                    subtitle: Text(strings.restoreDataOnlyHint),
+                  ),
+                  RadioListTile<bool>(
+                    contentPadding: EdgeInsets.zero,
+                    value: true,
+                    title: Text(strings.restoreAllWithSettingsOption),
+                    subtitle: Text(strings.restoreAllWithSettingsHint),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(strings.cancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_includeSettings),
+          child: Text(strings.confirm),
+        ),
+      ],
     );
   }
 }

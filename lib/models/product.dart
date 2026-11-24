@@ -10,11 +10,14 @@ class Product {
     this.boxQty = '',
     this.packBarcode = '',
     this.boxBarcode = '',
+    this.extraBarcodes = const [],
     this.unitWeight = '',
     this.unit = '',
+    this.imagePath = '',
     required this.costPrice,
     required this.sellPrice,
     this.wholesalePrice = 0,
+    this.wholesaleMinQty = 0,
     required this.stock,
     this.lowStockThreshold = 5,
     this.outOfStockSince,
@@ -34,12 +37,15 @@ class Product {
   final String boxQty;
   final String packBarcode;
   final String boxBarcode;
+  final List<String> extraBarcodes;
   final String unitWeight;
   final String unit;
+  final String imagePath;
   final double costPrice;
   final double sellPrice;
   final double wholesalePrice;
-  final int stock;
+  final int wholesaleMinQty;
+  final double stock;
   final int lowStockThreshold;
   final DateTime? outOfStockSince;
   final int totalOutOfStockDays;
@@ -52,6 +58,11 @@ class Product {
   bool get isActive => archivedAt == null && trashedAt == null;
 
   bool get hasWholesalePrice => wholesalePrice > 0.009;
+
+  bool get hasAutoWholesale => hasWholesalePrice && wholesaleMinQty > 0;
+
+  bool isAutoWholesaleForQty(num qty) =>
+      hasAutoWholesale && qty >= wholesaleMinQty;
 
   double get unitProfit => sellPrice - costPrice;
 
@@ -91,12 +102,15 @@ class Product {
     String? boxQty,
     String? packBarcode,
     String? boxBarcode,
+    List<String>? extraBarcodes,
     String? unitWeight,
     String? unit,
+    String? imagePath,
     double? costPrice,
     double? sellPrice,
     double? wholesalePrice,
-    int? stock,
+    int? wholesaleMinQty,
+    double? stock,
     int? lowStockThreshold,
     DateTime? outOfStockSince,
     bool clearOutOfStockSince = false,
@@ -118,11 +132,14 @@ class Product {
       boxQty: boxQty ?? this.boxQty,
       packBarcode: packBarcode ?? this.packBarcode,
       boxBarcode: boxBarcode ?? this.boxBarcode,
+      extraBarcodes: extraBarcodes ?? this.extraBarcodes,
       unitWeight: unitWeight ?? this.unitWeight,
       unit: unit ?? this.unit,
+      imagePath: imagePath ?? this.imagePath,
       costPrice: costPrice ?? this.costPrice,
       sellPrice: sellPrice ?? this.sellPrice,
       wholesalePrice: wholesalePrice ?? this.wholesalePrice,
+      wholesaleMinQty: wholesaleMinQty ?? this.wholesaleMinQty,
       stock: stock ?? this.stock,
       lowStockThreshold: lowStockThreshold ?? this.lowStockThreshold,
       outOfStockSince: clearOutOfStockSince
@@ -147,11 +164,14 @@ class Product {
       'boxQty': boxQty,
       'packBarcode': packBarcode,
       'boxBarcode': boxBarcode,
+      if (extraBarcodes.isNotEmpty) 'extraBarcodes': extraBarcodes,
       'unitWeight': unitWeight,
       'unit': unit,
+      if (imagePath.isNotEmpty) 'imagePath': imagePath,
       'costPrice': costPrice,
       'sellPrice': sellPrice,
       if (wholesalePrice > 0) 'wholesalePrice': wholesalePrice,
+      if (wholesaleMinQty > 0) 'wholesaleMinQty': wholesaleMinQty,
       'stock': stock,
       'lowStockThreshold': lowStockThreshold,
       if (outOfStockSince != null)
@@ -178,12 +198,19 @@ class Product {
       boxQty: (json['boxQty'] as String?) ?? '',
       packBarcode: (json['packBarcode'] as String?) ?? '',
       boxBarcode: (json['boxBarcode'] as String?) ?? '',
+      extraBarcodes: (json['extraBarcodes'] as List<dynamic>? ?? const [])
+          .map((e) => '$e'.trim())
+          .where((e) => e.isNotEmpty)
+          .toList(),
       unitWeight: (json['unitWeight'] as String?) ?? '',
       unit: (json['unit'] as String?) ?? '',
+      imagePath: (json['imagePath'] as String?) ?? '',
       costPrice: (json['costPrice'] as num).toDouble(),
       sellPrice: (json['sellPrice'] as num).toDouble(),
       wholesalePrice: (json['wholesalePrice'] as num?)?.toDouble() ?? 0,
-      stock: (json['stock'] as num).toInt(),
+      wholesaleMinQty:
+          ((json['wholesaleMinQty'] as num?)?.toInt() ?? 0).clamp(0, 999999),
+      stock: (json['stock'] as num).toDouble(),
       lowStockThreshold: (json['lowStockThreshold'] as num?)?.toInt() ?? 5,
       outOfStockSince:
           outOfStockRaw != null ? DateTime.tryParse(outOfStockRaw) : null,

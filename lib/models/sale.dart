@@ -80,7 +80,7 @@ class DefectWriteOffItem {
 
   final String productId;
   final String productName;
-  final int quantity;
+  final double quantity;
   final double unitCost;
   final String reason;
   final DateTime createdAt;
@@ -102,7 +102,7 @@ class DefectWriteOffItem {
     return DefectWriteOffItem(
       productId: json['productId'] as String,
       productName: json['productName'] as String,
-      quantity: (json['quantity'] as num).toInt(),
+      quantity: (json['quantity'] as num).toDouble(),
       unitCost: (json['unitCost'] as num).toDouble(),
       reason: (json['reason'] as String?) ?? '',
       createdAt: DateTime.parse(json['createdAt'] as String),
@@ -121,7 +121,7 @@ class SaleItem {
 
   final String productId;
   final String productName;
-  final int quantity;
+  final double quantity;
   final double unitCost;
   final double unitPrice;
 
@@ -132,7 +132,7 @@ class SaleItem {
   SaleItem copyWith({
     String? productId,
     String? productName,
-    int? quantity,
+    double? quantity,
     double? unitCost,
     double? unitPrice,
   }) {
@@ -159,7 +159,7 @@ class SaleItem {
     return SaleItem(
       productId: json['productId'] as String,
       productName: json['productName'] as String,
-      quantity: (json['quantity'] as num).toInt(),
+      quantity: (json['quantity'] as num).toDouble(),
       unitCost: (json['unitCost'] as num).toDouble(),
       unitPrice: (json['unitPrice'] as num).toDouble(),
     );
@@ -175,6 +175,7 @@ class Sale {
     this.secondaryAmount = 0,
     this.customerName = '',
     this.customerPhone = '',
+    this.sellerName = '',
     this.discount = 0,
     this.discountReason = '',
     this._paidAmount,
@@ -199,6 +200,7 @@ class Sale {
   final double secondaryAmount;
   final String customerName;
   final String customerPhone;
+  final String sellerName;
   final double discount;
   final String discountReason;
   final double? _paidAmount;
@@ -221,7 +223,7 @@ class Sale {
   bool get hasReturn =>
       returnedMoneyTotal > 0.009 || refundedAmount > 0.009 || refundNote.isNotEmpty;
 
-  int get totalUnits => items.fold(0, (sum, item) => sum + item.quantity);
+  double get totalUnits => items.fold(0.0, (sum, item) => sum + item.quantity);
 
   double get subtotal => items.fold(0.0, (sum, item) => sum + item.lineTotal);
 
@@ -278,6 +280,7 @@ class Sale {
     double? secondaryAmount,
     String? customerName,
     String? customerPhone,
+    String? sellerName,
     double? discount,
     String? discountReason,
     double? paidAmount,
@@ -307,6 +310,7 @@ class Sale {
       secondaryAmount: secondaryAmount ?? this.secondaryAmount,
       customerName: customerName ?? this.customerName,
       customerPhone: customerPhone ?? this.customerPhone,
+      sellerName: sellerName ?? this.sellerName,
       discount: discount ?? this.discount,
       discountReason: discountReason ?? this.discountReason,
       paidAmount: paidAmount ?? this.paidAmount,
@@ -335,6 +339,7 @@ class Sale {
       if (secondaryAmount > 0) 'secondaryAmount': secondaryAmount,
       'customerName': customerName,
       if (customerPhone.isNotEmpty) 'customerPhone': customerPhone,
+      if (sellerName.isNotEmpty) 'sellerName': sellerName,
       'discount': discount,
       if (discountReason.isNotEmpty) 'discountReason': discountReason,
       'paidAmount': paidAmount,
@@ -377,6 +382,7 @@ class Sale {
       secondaryAmount: (json['secondaryAmount'] as num?)?.toDouble() ?? 0,
       customerName: (json['customerName'] as String?) ?? '',
       customerPhone: (json['customerPhone'] as String?) ?? '',
+      sellerName: (json['sellerName'] as String?) ?? '',
       discount: (json['discount'] as num?)?.toDouble() ?? 0,
       discountReason: (json['discountReason'] as String?) ?? '',
       paidAmount: (json['paidAmount'] as num?)?.toDouble(),
@@ -413,11 +419,11 @@ class HeldSale {
 
   final String id;
   final String label;
-  final Map<String, int> quantities;
+  final Map<String, double> quantities;
   final DateTime createdAt;
 
-  int get totalUnits =>
-      quantities.values.fold(0, (sum, q) => sum + (q > 0 ? q : 0));
+  double get totalUnits =>
+      quantities.values.fold(0.0, (sum, q) => sum + (q > 0 ? q : 0));
 
   Map<String, dynamic> toJson() {
     return {
@@ -435,8 +441,8 @@ class HeldSale {
       label: (json['label'] as String?) ?? '',
       quantities: {
         for (final entry in rawQty.entries)
-          if ((entry.value as num).toInt() > 0)
-            entry.key: (entry.value as num).toInt(),
+          if ((entry.value as num).toDouble() > 0)
+            entry.key: (entry.value as num).toDouble(),
       },
       createdAt: DateTime.parse(json['createdAt'] as String),
     );

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/product.dart';
@@ -6,11 +7,67 @@ import '../models/stock_in.dart';
 import '../screens/barcode_scanner_screen.dart';
 import '../services/export_service.dart';
 import '../state/shop_controller.dart';
+import 'attach_barcode_sheet.dart';
 import 'currency_calculator_dialog.dart';
+import 'hardware_barcode_listener.dart';
 import 'formatters.dart';
 import 'product_form_sheet.dart';
+import 'voice_search_button.dart';
 
 enum _DeliverySplitMode { perUnit, byValue, byWeight }
+
+class StockInMarginAlert {
+  const StockInMarginAlert({
+    required this.costIncreased,
+    required this.newMarginPercent,
+    required this.isMarginRed,
+    required this.suggestedSellPrice,
+    required this.raisePercent,
+  });
+
+  final bool costIncreased;
+  final double newMarginPercent;
+  final bool isMarginRed;
+  final double suggestedSellPrice;
+  final int raisePercent;
+
+  bool get canRaiseSellPrice =>
+      costIncreased && raisePercent > 0 && suggestedSellPrice > 0;
+
+  static StockInMarginAlert evaluate({
+    required double oldCost,
+    required double newCost,
+    required double oldSell,
+    required double currentSell,
+  }) {
+    final costIncreased = oldCost > 0 && newCost > oldCost + 0.009;
+    final newMargin = currentSell > 0
+        ? ((currentSell - newCost) / currentSell) * 100
+        : (newCost > 0 ? -100.0 : 0.0);
+    final prevMargin = (oldCost > 0 && oldSell > 0)
+        ? ((oldSell - oldCost) / oldSell) * 100
+        : 0.0;
+    final isMarginRed = newMargin < 15 ||
+        (costIncreased && (newMargin < prevMargin - 0.5 || newMargin <= 0));
+    final suggestedSell = (oldCost > 0 && oldSell > 0 && newCost > 0)
+        ? (newCost * (oldSell / oldCost)).roundToDouble()
+        : 0.0;
+    final raisePercent = (costIncreased &&
+            currentSell > 0 &&
+            suggestedSell > currentSell + 0.5)
+        ? (((suggestedSell - currentSell) / currentSell) * 100)
+            .round()
+            .clamp(1, 9999)
+        : 0;
+    return StockInMarginAlert(
+      costIncreased: costIncreased,
+      newMarginPercent: newMargin,
+      isMarginRed: isMarginRed,
+      suggestedSellPrice: suggestedSell,
+      raisePercent: raisePercent,
+    );
+  }
+}
 
 class StockInSheet extends StatefulWidget {
   const StockInSheet({super.key, required this.controller});
@@ -26,8 +83,9 @@ class _StockInSheetState extends State<StockInSheet> {
 
   final _supplierController = TextEditingController();
   final _rateController = TextEditingController();
+  final _paidNowController = TextEditingController();
   final _searchController = TextEditingController();
-  final Map<String, int> _quantities = {};
+  final Map<String, double> _quantities = {};
   final Map<String, double> _unitCosts = {};
   final Map<String, double> _sellPrices = {};
   final Map<String, TextEditingController> _costControllers = {};
@@ -36,17 +94,26 @@ class _StockInSheetState extends State<StockInSheet> {
   String _searchQuery = '';
   String _rateCurrency = 'USD';
   bool _recordAsExpense = true;
+  bool _isCredit = false;
   String? _lastScannedId;
   String? _scanFeedback;
   bool _scanError = false;
   String? _notFoundSku;
   bool _addedOnly = false;
+  bool _detailsExpanded = false;
 
   double? get _parsedExchangeRate {
     final parsed = double.tryParse(
       _rateController.text.trim().replaceAll(',', '.'),
     );
     return (parsed != null && parsed > 0) ? parsed : null;
+  }
+
+  double get _parsedPaidNow {
+    final parsed = double.tryParse(
+      _paidNowController.text.trim().replaceAll(',', '.'),
+    );
+    return (parsed != null && parsed > 0) ? parsed : 0.0;
   }
 
   @override
@@ -66,6 +133,13 @@ class _StockInSheetState extends State<StockInSheet> {
             : r.toStringAsFixed(2);
       }
       _recordAsExpense = draft.recordAsExpense;
+      _isCredit = draft.isCredit;
+      if (draft.initialPaidAmount > 0) {
+        final p = draft.initialPaidAmount;
+        _paidNowController.text = p == p.roundToDouble()
+            ? p.toStringAsFixed(0)
+            : p.toStringAsFixed(2);
+      }
     }
     for (final p in widget.controller.products) {
       final draftQty = draft?.quantities[p.id] ?? 0;
@@ -98,6 +172,7 @@ class _StockInSheetState extends State<StockInSheet> {
   void dispose() {
     _supplierController.dispose();
     _rateController.dispose();
+    _paidNowController.dispose();
     _searchController.dispose();
     for (final c in _costControllers.values) {
       c.dispose();
@@ -112,7 +187,7 @@ class _StockInSheetState extends State<StockInSheet> {
   }
 
   void _persistDraft() {
-    final activeQty = <String, int>{};
+    final activeQty = <String, double>{};
     final activeCosts = <String, double>{};
     final activeSells = <String, double>{};
     for (final entry in _quantities.entries) {
@@ -134,6 +209,8 @@ class _StockInSheetState extends State<StockInSheet> {
         currencyCode: _parsedExchangeRate != null ? _rateCurrency : '',
         exchangeRate: _parsedExchangeRate,
         recordAsExpense: _recordAsExpense,
+        isCredit: _isCredit,
+        initialPaidAmount: _isCredit ? _parsedPaidNow : 0,
         quantities: activeQty,
         unitCosts: activeCosts,
         sellPrices: activeSells,
@@ -144,11 +221,13 @@ class _StockInSheetState extends State<StockInSheet> {
   Future<void> _clearDraft() async {
     _supplierController.clear();
     _rateController.clear();
+    _paidNowController.clear();
     _searchController.clear();
     setState(() {
       _searchQuery = '';
       _rateCurrency = 'USD';
       _recordAsExpense = true;
+      _isCredit = false;
       _quantities.clear();
       _lastScannedId = null;
       _scanFeedback = null;
@@ -167,12 +246,13 @@ class _StockInSheetState extends State<StockInSheet> {
     await widget.controller.clearStockInDraft();
   }
 
-  void _setQuantity(String productId, int nextQty) {
-    final clean = nextQty < 0 ? 0 : nextQty;
+  void _setQuantity(String productId, double nextQty) {
+    final clean = nextQty < 0 ? 0.0 : nextQty;
     _quantities[productId] = clean;
     final ctrl = _qtyControllers[productId];
-    if (ctrl != null && ctrl.text != '$clean') {
-      ctrl.text = '$clean';
+    final formatted = formatQty(clean);
+    if (ctrl != null && ctrl.text != formatted) {
+      ctrl.text = formatted;
     }
     _persistDraft();
   }
@@ -206,7 +286,11 @@ class _StockInSheetState extends State<StockInSheet> {
         _scanFeedback = msg;
         _scanError = true;
       });
-      return ScanBatchFeedback(found: false, message: msg);
+      return ScanBatchFeedback(
+        found: false,
+        message: msg,
+        notFoundCode: code.trim(),
+      );
     }
 
     final delta = _scanIncrementFor(
@@ -216,7 +300,7 @@ class _StockInSheetState extends State<StockInSheet> {
       found.packBarcode,
       found.boxBarcode,
     );
-    final nextQty = (_quantities[found.id] ?? 0) + delta;
+    final nextQty = (_quantities[found.id] ?? 0.0) + delta;
     final msg = strings.scannedAddedToStockInMsg(delta, found.name, nextQty);
     _searchController.clear();
     setState(() {
@@ -234,9 +318,19 @@ class _StockInSheetState extends State<StockInSheet> {
     final strings = widget.controller.strings;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => BarcodeScannerScreen(
+        builder: (scanCtx) => BarcodeScannerScreen(
           strings: strings,
           onContinuousScan: _handleContinuousScan,
+          batchCounterLabel: () =>
+              '${strings.stockInBtn}: ${formatQty(_quantities.values.fold(0.0, (s, q) => s + q))}',
+          onAttachBarcode: (code) async {
+            final linked = await showAttachBarcodeSheet(
+              scanCtx,
+              controller: widget.controller,
+              barcode: code,
+            );
+            return linked != null;
+          },
         ),
       ),
     );
@@ -311,10 +405,10 @@ class _StockInSheetState extends State<StockInSheet> {
       targetCurrency: widget.controller.currency,
       productName: product.name,
       initialValue: current,
-      integerMode: true,
+      integerMode: false,
     );
     if (result == null || !mounted) return;
-    setState(() => _setQuantity(product.id, result.round()));
+    setState(() => _setQuantity(product.id, result));
   }
 
   Future<void> _openSellCalculator(Product product) async {
@@ -346,7 +440,7 @@ class _StockInSheetState extends State<StockInSheet> {
   }
 
   Future<void> _openDeliveryDistribution(
-    int totalUnits,
+    double totalUnits,
     double totalCost,
   ) async {
     if (totalUnits <= 0) return;
@@ -490,9 +584,11 @@ class _StockInSheetState extends State<StockInSheet> {
       exchangeRate: _parsedExchangeRate,
       items: items,
       recordAsExpense: _recordAsExpense,
+      isCredit: _isCredit,
+      paidAmount: _isCredit ? _parsedPaidNow : 0,
     );
     if (mounted) {
-      final totalUnits = items.fold(0, (s, i) => s + i.quantity);
+      final totalUnits = items.fold(0.0, (s, i) => s + i.quantity);
       Navigator.of(context).pop(totalUnits);
     }
   }
@@ -525,7 +621,7 @@ class _StockInSheetState extends State<StockInSheet> {
       });
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
-    var totalUnits = 0;
+    var totalUnits = 0.0;
     var totalCost = 0.0;
     for (final p in allProducts) {
       final qty = _quantities[p.id] ?? 0;
@@ -535,13 +631,25 @@ class _StockInSheetState extends State<StockInSheet> {
       }
     }
 
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
-      child: SingleChildScrollView(
+    final supplierSummary = _supplierController.text.trim().isNotEmpty
+        ? _supplierController.text.trim()
+        : strings.supplierNameHint;
+    final rateSummary = _parsedExchangeRate != null
+        ? '1 $_rateCurrency = ${_rateController.text.trim()}'
+        : _rateCurrency;
+
+    return HardwareBarcodeListener(
+      onBarcode: (code) {
+        _handleContinuousScan(code);
+        HapticFeedback.mediumImpact();
+      },
+      child: SizedBox(
+      height: MediaQuery.sizeOf(context).height * 0.90,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 12, 16, bottomInset + 12),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+          children: [
           Row(
             children: [
               Expanded(
@@ -571,85 +679,149 @@ class _StockInSheetState extends State<StockInSheet> {
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _supplierController,
-            onChanged: (_) {
-              setState(() {});
-              _persistDraft();
-            },
-            decoration: InputDecoration(
-              labelText: strings.supplierNameHint,
-              border: const OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          if (recentSuppliers.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            SizedBox(
-              height: 36,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: recentSuppliers.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 6),
-                itemBuilder: (_, idx) {
-                  final s = recentSuppliers[idx];
-                  return ActionChip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text(s),
-                    onPressed: () {
-                      _supplierController.text = s;
-                      setState(() {});
-                      _persistDraft();
-                    },
-                  );
-                },
+          const SizedBox(height: 6),
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => setState(() => _detailsExpanded = !_detailsExpanded),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
               ),
-            ),
-          ],
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              SizedBox(
-                width: 110,
-                child: DropdownButtonFormField<String>(
-                  initialValue: _rateCurrency,
-                  isDense: true,
-                  decoration: InputDecoration(
-                    labelText: strings.currencyLabel,
-                    border: const OutlineInputBorder(),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 10,
+              child: Row(
+                children: [
+                  const Icon(Icons.tune, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$supplierSummary • $rateSummary',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                  items: [
-                    for (final code in _rateCurrencies)
-                      DropdownMenuItem(value: code, child: Text(code)),
-                  ],
-                  onChanged: (v) {
-                    if (v == null) return;
-                    setState(() => _rateCurrency = v);
-                    _persistDraft();
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _rateController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  onChanged: (_) => _persistDraft(),
-                  decoration: InputDecoration(
-                    labelText: strings.stockInRateHint,
-                    hintText: '1 $_rateCurrency = ...',
-                    border: const OutlineInputBorder(),
-                    isDense: true,
+                  Icon(
+                    _detailsExpanded
+                        ? Icons.expand_less
+                        : Icons.expand_more,
+                    size: 20,
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            child: !_detailsExpanded
+                ? const SizedBox.shrink()
+                : Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextField(
+                          controller: _supplierController,
+                          onChanged: (_) {
+                            setState(() {});
+                            _persistDraft();
+                          },
+                          decoration: InputDecoration(
+                            labelText: strings.supplierNameHint,
+                            border: const OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                        if (recentSuppliers.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            height: 36,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: recentSuppliers.length,
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 6),
+                              itemBuilder: (_, idx) {
+                                final s = recentSuppliers[idx];
+                                return ActionChip(
+                                  visualDensity: VisualDensity.compact,
+                                  label: Text(s),
+                                  onPressed: () {
+                                    _supplierController.text = s;
+                                    setState(() {});
+                                    _persistDraft();
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            SizedBox(
+                              width: 110,
+                              child: DropdownButtonFormField<String>(
+                                initialValue: _rateCurrency,
+                                isDense: true,
+                                decoration: InputDecoration(
+                                  labelText: strings.currencyLabel,
+                                  border: const OutlineInputBorder(),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 10,
+                                  ),
+                                ),
+                                items: [
+                                  for (final code in _rateCurrencies)
+                                    DropdownMenuItem(
+                                      value: code,
+                                      child: Text(code),
+                                    ),
+                                ],
+                                onChanged: (v) {
+                                  if (v == null) return;
+                                  setState(() => _rateCurrency = v);
+                                  _persistDraft();
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TextField(
+                                controller: _rateController,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                  decimal: true,
+                                ),
+                                onTap: () => selectAllText(_rateController),
+                                onChanged: (_) => _persistDraft(),
+                                decoration: InputDecoration(
+                                  labelText: strings.stockInRateHint,
+                                  hintText: '1 $_rateCurrency = ...',
+                                  border: const OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                          value: _recordAsExpense,
+                          onChanged: (v) {
+                            setState(() => _recordAsExpense = v ?? true);
+                            _persistDraft();
+                          },
+                          title: Text(strings.recordAsExpenseLabel),
+                          controlAffinity: ListTileControlAffinity.leading,
+                        ),
+                      ],
+                    ),
+                  ),
           ),
           const SizedBox(height: 8),
           Row(
@@ -658,18 +830,42 @@ class _StockInSheetState extends State<StockInSheet> {
                 child: TextField(
                   controller: _searchController,
                   onChanged: (v) => setState(() => _searchQuery = v),
+                  onSubmitted: (raw) {
+                    final clean = raw.trim();
+                    if (clean.isEmpty) return;
+                    final res = _handleContinuousScan(clean);
+                    if (res.found) {
+                      HapticFeedback.mediumImpact();
+                      _searchController.clear();
+                      setState(() => _searchQuery = '');
+                    }
+                  },
                   decoration: InputDecoration(
                     hintText: strings.searchGoodsHint,
                     prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _searchQuery.isNotEmpty
-                        ? IconButton(
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_searchQuery.isNotEmpty)
+                          IconButton(
                             onPressed: () {
                               _searchController.clear();
                               setState(() => _searchQuery = '');
                             },
                             icon: const Icon(Icons.clear),
-                          )
-                        : null,
+                          ),
+                        VoiceSearchButton(
+                          strings: strings,
+                          language: widget.controller.language,
+                          onResult: (text) {
+                            _searchController.text = text;
+                            _searchController.selection =
+                                TextSelection.collapsed(offset: text.length);
+                            setState(() => _searchQuery = text);
+                          },
+                        ),
+                      ],
+                    ),
                     border: const OutlineInputBorder(),
                     isDense: true,
                   ),
@@ -706,7 +902,22 @@ class _StockInSheetState extends State<StockInSheet> {
                       ),
                     ),
                   ),
-                  if (_scanError && _notFoundSku != null)
+                  if (_scanError && _notFoundSku != null) ...[
+                    TextButton.icon(
+                      onPressed: () async {
+                        final sku = _notFoundSku!;
+                        final linked = await showAttachBarcodeSheet(
+                          context,
+                          controller: widget.controller,
+                          barcode: sku,
+                        );
+                        if (linked != null && mounted) {
+                          _handleContinuousScan(sku);
+                        }
+                      },
+                      icon: const Icon(Icons.link, size: 18),
+                      label: Text(strings.attachBarcodeToExistingBtn),
+                    ),
                     TextButton.icon(
                       onPressed: () => _createProductFromStockIn(
                         initialSku: _notFoundSku,
@@ -714,26 +925,16 @@ class _StockInSheetState extends State<StockInSheet> {
                       icon: const Icon(Icons.add, size: 18),
                       label: Text(strings.addProductBtn),
                     ),
+                  ],
                 ],
               ),
             ),
           ],
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            visualDensity: VisualDensity.compact,
-            value: _recordAsExpense,
-            onChanged: (v) {
-              setState(() => _recordAsExpense = v ?? true);
-              _persistDraft();
-            },
-            title: Text(strings.recordAsExpenseLabel),
-            controlAffinity: ListTileControlAffinity.leading,
-          ),
           if (addedItemsCount > 0 || _addedOnly)
             Align(
               alignment: Alignment.centerLeft,
               child: Padding(
-                padding: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.only(top: 6, bottom: 4),
                 child: FilterChip(
                   visualDensity: VisualDensity.compact,
                   label: Text(strings.addedOnlyFilter(addedItemsCount)),
@@ -742,8 +943,8 @@ class _StockInSheetState extends State<StockInSheet> {
                 ),
               ),
             ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 260),
+          const SizedBox(height: 6),
+          Expanded(
             child: products.isEmpty
                 ? Padding(
                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -772,7 +973,6 @@ class _StockInSheetState extends State<StockInSheet> {
                     ),
                   )
                 : ListView.separated(
-              shrinkWrap: true,
               itemCount: products.length,
               separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, index) {
@@ -825,13 +1025,16 @@ class _StockInSheetState extends State<StockInSheet> {
                                 child: TextField(
                                   controller: qtyCtrl,
                                   textAlign: TextAlign.center,
-                                  keyboardType: TextInputType.number,
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
                                   onTap: () => qtyCtrl.selection = TextSelection(
                                     baseOffset: 0,
                                     extentOffset: qtyCtrl.text.length,
                                   ),
                                   onChanged: (v) {
-                                    final parsed = int.tryParse(v.trim());
+                                    final parsed = parseQty(v);
                                     setState(() {
                                       _quantities[p.id] =
                                           (parsed == null || parsed < 0)
@@ -880,8 +1083,11 @@ class _StockInSheetState extends State<StockInSheet> {
                                       const TextInputType.numberWithOptions(
                                     decimal: true,
                                   ),
+                                  onTap: () => selectAllText(costCtrl),
                                   onChanged: (v) {
-                                    final parsed = double.tryParse(v.trim());
+                                    final parsed = double.tryParse(
+                                      v.trim().replaceAll(',', '.'),
+                                    );
                                     if (parsed != null && parsed >= 0) {
                                       setState(() => _unitCosts[p.id] = parsed);
                                       _persistDraft();
@@ -925,19 +1131,20 @@ class _StockInSheetState extends State<StockInSheet> {
                         Builder(
                           builder: (context) {
                             final currentSell = _sellPrices[p.id] ?? p.sellPrice;
-                            final newMargin = currentSell > 0
-                                ? ((currentSell - unitCost) / currentSell) * 100
-                                : 0.0;
+                            final alert = StockInMarginAlert.evaluate(
+                              oldCost: p.costPrice,
+                              newCost: unitCost,
+                              oldSell: p.sellPrice,
+                              currentSell: currentSell,
+                            );
                             final canKeepMarkup = p.costPrice > 0 &&
                                 p.sellPrice > 0 &&
                                 unitCost > 0 &&
-                                costDiff.abs() > 0.009;
-                            final suggestedSell = canKeepMarkup
-                                ? (unitCost * (p.sellPrice / p.costPrice))
-                                    .roundToDouble()
-                                : 0.0;
+                                costDiff < -0.009;
                             final showKeepChip = canKeepMarkup &&
-                                (currentSell - suggestedSell).abs() >= 1;
+                                (currentSell - alert.suggestedSellPrice).abs() >=
+                                    1;
+                            final colorScheme = Theme.of(context).colorScheme;
                             return Padding(
                               padding: const EdgeInsets.only(top: 6),
                               child: Wrap(
@@ -953,8 +1160,11 @@ class _StockInSheetState extends State<StockInSheet> {
                                           const TextInputType.numberWithOptions(
                                         decimal: true,
                                       ),
+                                      onTap: () => selectAllText(sellCtrl),
                                       onChanged: (v) {
-                                        final parsed = double.tryParse(v.trim());
+                                        final parsed = double.tryParse(
+                                          v.trim().replaceAll(',', '.'),
+                                        );
                                         if (parsed != null && parsed >= 0) {
                                           setState(
                                             () => _sellPrices[p.id] = parsed,
@@ -978,16 +1188,75 @@ class _StockInSheetState extends State<StockInSheet> {
                                       ),
                                     ),
                                   ),
-                                  Text(
-                                    '${strings.marginShort}: ${newMargin.toStringAsFixed(0)}%',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      color: newMargin < 15
-                                          ? Theme.of(context).colorScheme.error
-                                          : Colors.green.shade700,
+                                  Container(
+                                    padding: alert.costIncreased
+                                        ? const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          )
+                                        : EdgeInsets.zero,
+                                    decoration: alert.costIncreased &&
+                                            alert.isMarginRed
+                                        ? BoxDecoration(
+                                            color: colorScheme.errorContainer,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          )
+                                        : null,
+                                    child: Text(
+                                      alert.costIncreased
+                                          ? strings.newMarginLabel(
+                                              alert.newMarginPercent
+                                                  .toStringAsFixed(0),
+                                            )
+                                          : '${strings.marginShort}: ${alert.newMarginPercent.toStringAsFixed(0)}%',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: alert.isMarginRed
+                                            ? colorScheme.error
+                                            : Colors.green.shade700,
+                                      ),
                                     ),
                                   ),
-                                  if (showKeepChip)
+                                  if (alert.canRaiseSellPrice)
+                                    FilledButton.tonalIcon(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor:
+                                            colorScheme.errorContainer,
+                                        foregroundColor:
+                                            colorScheme.onErrorContainer,
+                                        visualDensity: VisualDensity.compact,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                      ),
+                                      onPressed: () {
+                                        setState(() {
+                                          _sellPrices[p.id] =
+                                              alert.suggestedSellPrice;
+                                          sellCtrl.text = alert
+                                              .suggestedSellPrice
+                                              .toStringAsFixed(0);
+                                        });
+                                        _persistDraft();
+                                      },
+                                      icon: const Icon(
+                                        Icons.trending_up,
+                                        size: 16,
+                                      ),
+                                      label: Text(
+                                        strings.raiseSellPriceAction(
+                                          alert.raisePercent,
+                                          formatMoney(
+                                            alert.suggestedSellPrice,
+                                            currency,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  else if (showKeepChip)
                                     ActionChip(
                                       visualDensity: VisualDensity.compact,
                                       avatar: const Icon(
@@ -996,13 +1265,18 @@ class _StockInSheetState extends State<StockInSheet> {
                                       ),
                                       label: Text(
                                         strings.keepMarkupAction(
-                                          formatMoney(suggestedSell, currency),
+                                          formatMoney(
+                                            alert.suggestedSellPrice,
+                                            currency,
+                                          ),
                                         ),
                                       ),
                                       onPressed: () {
                                         setState(() {
-                                          _sellPrices[p.id] = suggestedSell;
-                                          sellCtrl.text = suggestedSell
+                                          _sellPrices[p.id] =
+                                              alert.suggestedSellPrice;
+                                          sellCtrl.text = alert
+                                              .suggestedSellPrice
                                               .toStringAsFixed(0);
                                         });
                                         _persistDraft();
@@ -1019,12 +1293,54 @@ class _StockInSheetState extends State<StockInSheet> {
               },
             ),
           ),
-          const SizedBox(height: 12),
+          if (totalUnits > 0) ...[
+            const SizedBox(height: 8),
+            SegmentedButton<bool>(
+              showSelectedIcon: false,
+              segments: [
+                ButtonSegment(
+                  value: false,
+                  icon: const Icon(Icons.check_circle_outline, size: 18),
+                  label: Text(strings.paidBadge),
+                ),
+                ButtonSegment(
+                  value: true,
+                  icon: const Icon(Icons.schedule_outlined, size: 18),
+                  label: Text(strings.supplierDebtModeLabel),
+                ),
+              ],
+              selected: {_isCredit},
+              onSelectionChanged: (sel) {
+                final nextCredit = sel.first;
+                setState(() {
+                  _isCredit = nextCredit;
+                  _recordAsExpense = !nextCredit;
+                });
+                _persistDraft();
+              },
+            ),
+            if (_isCredit) ...[
+              const SizedBox(height: 8),
+              TextField(
+                controller: _paidNowController,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                onTap: () => selectAllText(_paidNowController),
+                onChanged: (_) => _persistDraft(),
+                decoration: InputDecoration(
+                  labelText: strings.paidNowOptional,
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ],
+          const SizedBox(height: 10),
           FilledButton(
             onPressed: totalUnits > 0 ? _submit : null,
             child: Text(
               totalUnits > 0
-                  ? '${strings.receiveStockAction} ($totalUnits • ${formatMoney(totalCost, currency)})'
+                  ? '${strings.receiveStockAction} (${formatQty(totalUnits)} • ${formatMoney(totalCost, currency)})'
                   : strings.receiveStockAction,
             ),
           ),
@@ -1053,6 +1369,7 @@ class _StockInSheetState extends State<StockInSheet> {
           ],
         ),
       ),
+    ),
     );
   }
 }
@@ -1250,7 +1567,7 @@ class _DistributeDeliveryDialog extends StatefulWidget {
 
   final dynamic strings;
   final dynamic currency;
-  final int totalUnits;
+  final double totalUnits;
   final double totalGoodsCost;
   final double totalWeight;
 

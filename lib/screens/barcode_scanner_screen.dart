@@ -8,10 +8,12 @@ class ScanBatchFeedback {
   const ScanBatchFeedback({
     required this.found,
     required this.message,
+    this.notFoundCode,
   });
 
   final bool found;
   final String message;
+  final String? notFoundCode;
 }
 
 class BarcodeScannerScreen extends StatefulWidget {
@@ -19,10 +21,14 @@ class BarcodeScannerScreen extends StatefulWidget {
     super.key,
     required this.strings,
     this.onContinuousScan,
+    this.onAttachBarcode,
+    this.batchCounterLabel,
   });
 
   final AppStrings strings;
   final ScanBatchFeedback Function(String code)? onContinuousScan;
+  final Future<bool> Function(String code)? onAttachBarcode;
+  final String Function()? batchCounterLabel;
 
   @override
   State<BarcodeScannerScreen> createState() => _BarcodeScannerScreenState();
@@ -36,6 +42,7 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
   DateTime? _lastScanAt;
   ScanBatchFeedback? _lastFeedback;
   int _scanCount = 0;
+  bool _multiScanEnabled = true;
 
   bool get _isContinuous => widget.onContinuousScan != null;
 
@@ -101,6 +108,24 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
         _scanCount += 1;
       }
     });
+    if (feedback.found && !_multiScanEnabled && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _attachNotFoundBarcode(String code) async {
+    final attach = widget.onAttachBarcode;
+    if (attach == null) return;
+    final linked = await attach(code);
+    if (!linked || !mounted || widget.onContinuousScan == null) return;
+    final feedback = widget.onContinuousScan!(code);
+    _playFeedback(feedback.found);
+    setState(() {
+      _lastFeedback = feedback;
+      if (feedback.found) {
+        _scanCount += 1;
+      }
+    });
   }
 
   @override
@@ -120,11 +145,21 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
             onPressed: () => _scannerController.switchCamera(),
             icon: const Icon(Icons.cameraswitch_outlined),
           ),
-          if (_isContinuous)
+          if (_isContinuous) ...[
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: FilterChip(
+                visualDensity: VisualDensity.compact,
+                label: Text(strings.multiScanLabel),
+                selected: _multiScanEnabled,
+                onSelected: (v) => setState(() => _multiScanEnabled = v),
+              ),
+            ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
               child: Text(strings.doneAction),
             ),
+          ],
         ],
       ),
       body: Column(
@@ -228,7 +263,21 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
                               textAlign: TextAlign.center,
                             ),
                           ),
-                        if (_scanCount > 0) ...[
+                        if (_lastFeedback != null &&
+                            !_lastFeedback!.found &&
+                            _lastFeedback!.notFoundCode != null &&
+                            widget.onAttachBarcode != null) ...[
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            onPressed: () => _attachNotFoundBarcode(
+                              _lastFeedback!.notFoundCode!,
+                            ),
+                            icon: const Icon(Icons.link),
+                            label: Text(strings.attachBarcodeToExistingBtn),
+                          ),
+                        ],
+                        if (_scanCount > 0 ||
+                            widget.batchCounterLabel != null) ...[
                           const SizedBox(height: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -240,7 +289,8 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
                               borderRadius: BorderRadius.circular(20),
                             ),
                             child: Text(
-                              strings.scannedCountLabel(_scanCount),
+                              widget.batchCounterLabel?.call() ??
+                                  strings.scannedCountLabel(_scanCount),
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w600,

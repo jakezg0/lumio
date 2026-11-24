@@ -8,6 +8,7 @@ import '../screens/barcode_scanner_screen.dart';
 import '../services/export_service.dart';
 import '../state/shop_controller.dart';
 import 'formatters.dart';
+import 'price_tag_queue_sheet.dart';
 import 'receipt_sheet.dart';
 import 'stock_in_sheet.dart';
 
@@ -108,6 +109,91 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
     }
   }
 
+  Future<void> _showPaySupplierDialog(StockInRecord inv) async {
+    final strings = widget.controller.strings;
+    final currency = widget.controller.currency;
+    final amountCtrl = TextEditingController(
+      text: inv.remainingDebt == inv.remainingDebt.roundToDouble()
+          ? inv.remainingDebt.toStringAsFixed(0)
+          : inv.remainingDebt.toStringAsFixed(2),
+    );
+    var recordAsExpense = true;
+
+    final confirmed = await showDialog<({double amount, bool asExpense})>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) => AlertDialog(
+          title: Text(strings.paySupplierDebtTitle),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '${inv.supplierName.isEmpty ? strings.unspecifiedSupplierLabel : inv.supplierName} • '
+                  '${strings.remainingDebtLabel}: ${formatMoney(inv.remainingDebt, currency)}',
+                  style: Theme.of(dialogCtx).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: amountCtrl,
+                  autofocus: true,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onTap: () => selectAllText(amountCtrl),
+                  decoration: InputDecoration(
+                    labelText: strings.paymentAmountHint,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  value: recordAsExpense,
+                  onChanged: (v) =>
+                      setDialogState(() => recordAsExpense = v ?? true),
+                  title: Text(strings.recordAsExpenseLabel),
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(),
+              child: Text(strings.cancel),
+            ),
+            FilledButton(
+              onPressed: () {
+                final parsed = double.tryParse(
+                  amountCtrl.text.trim().replaceAll(',', '.'),
+                );
+                if (parsed == null || parsed <= 0) return;
+                Navigator.of(dialogCtx).pop(
+                  (amount: parsed, asExpense: recordAsExpense),
+                );
+              },
+              child: Text(strings.confirm),
+            ),
+          ],
+        ),
+      ),
+    );
+    amountCtrl.dispose();
+    if (confirmed == null || !mounted) return;
+    await widget.controller.recordSupplierPayment(
+      inv.id,
+      confirmed.amount,
+      recordAsExpense: confirmed.asExpense,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.paymentRecorded)),
+      );
+    }
+  }
+
   bool _matchesQuery(String rawQuery, List<String> fields) {
     final q = rawQuery.trim().toLowerCase();
     if (q.isEmpty) return true;
@@ -143,7 +229,7 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
 
         final entries = <_InvoiceEntry>[];
         var totalStockInCost = 0.0;
-        var totalStockInUnits = 0;
+        var totalStockInUnits = 0.0;
 
         if (_typeFilter != InvoiceHistoryFilter.stockIns) {
           for (final sale in widget.controller.filteredSales(_dateFilter)) {
@@ -493,7 +579,17 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                             ],
                           ),
                           subtitle: Text(
-                            '${strings.stockInInvoicesTab} • ${formatDateTime(inv.createdAt)} • ${strings.unitsShort(inv.totalUnits)}',
+                            [
+                              strings.stockInInvoicesTab,
+                              formatDateTime(inv.createdAt),
+                              strings.unitsShort(inv.totalUnits),
+                              if (!inv.isPaid)
+                                strings.unpaidBadge(
+                                  formatMoney(inv.remainingDebt, currency),
+                                )
+                              else if (inv.isCredit)
+                                strings.debtPaidBadge,
+                            ].join(' • '),
                           ),
                           childrenPadding:
                               const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -515,6 +611,45 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                                   ],
                                 ),
                               ),
+                            if (!inv.isPaid) ...[
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _showPaySupplierDialog(inv),
+                                      icon: const Icon(
+                                        Icons.payments_outlined,
+                                        size: 18,
+                                      ),
+                                      label: Text(strings.addPayment),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: FilledButton.tonalIcon(
+                                      onPressed: () async {
+                                        await widget.controller
+                                            .markStockInPaid(inv.id);
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(this.context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                strings.paymentRecorded,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      icon: const Icon(Icons.check, size: 18),
+                                      label: Text(strings.markAsPaid),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                             const SizedBox(height: 8),
                             Row(
                               children: [
@@ -570,6 +705,36 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                                     icon: const Icon(Icons.replay, size: 18),
                                     label: Text(strings.repeatStockInBtn),
                                   ),
+                                ),
+                                const SizedBox(width: 8),
+                                OutlinedButton.icon(
+                                  onPressed: () {
+                                    final products = [
+                                      for (final item in inv.items)
+                                        if (widget.controller.findProductById(
+                                              item.productId,
+                                            ) !=
+                                            null)
+                                          widget.controller.findProductById(
+                                            item.productId,
+                                          )!,
+                                    ];
+                                    if (products.isEmpty) return;
+                                    showModalBottomSheet<void>(
+                                      context: context,
+                                      isScrollControlled: true,
+                                      useSafeArea: true,
+                                      builder: (_) => BatchPriceTagsSheet(
+                                        controller: widget.controller,
+                                        products: products,
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.sell_outlined,
+                                    size: 18,
+                                  ),
+                                  label: Text(strings.printInvoicePriceTagsBtn),
                                 ),
                                 const SizedBox(width: 8),
                                 IconButton.outlined(

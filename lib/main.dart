@@ -7,6 +7,8 @@ import 'screens/inventory_screen.dart';
 import 'screens/pos_screen.dart';
 import 'screens/sales_screen.dart';
 import 'state/shop_controller.dart';
+import 'widgets/backup_export_sheet.dart';
+import 'widgets/formatters.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -42,6 +44,9 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controller = widget.controller ?? ShopController();
+    if (_controller.isLoaded && _controller.cashierMode) {
+      _currentIndex = 1;
+    }
     _controller.addListener(_onControllerChanged);
     _controller.initialize();
   }
@@ -49,15 +54,19 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
   void _onControllerChanged() {
     if (!_initialReminderChecked && _controller.isLoaded) {
       _initialReminderChecked = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _maybeShowNegativeStockReminder(force: true);
+      if (_controller.cashierMode) {
+        _currentIndex = 1;
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _maybeShowNegativeStockReminder(force: true);
+        await _maybeShowExternalBackupReminder();
       });
     }
     if (_controller.syncNoticeVersion != _lastHandledSyncNoticeVersion) {
       _lastHandledSyncNoticeVersion = _controller.syncNoticeVersion;
       final notice = _controller.lastSheetSyncNotice;
       final isError = _controller.lastSheetSyncIsError;
-      if (notice.isNotEmpty) {
+      if (isError && notice.isNotEmpty) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           final messenger = _scaffoldMessengerKey.currentState;
           if (messenger == null) return;
@@ -65,8 +74,8 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
           messenger.showSnackBar(
             SnackBar(
               content: Text(notice),
-              backgroundColor: isError ? Colors.red.shade700 : null,
-              duration: Duration(seconds: isError ? 5 : 3),
+              backgroundColor: Colors.red.shade700,
+              duration: const Duration(seconds: 5),
             ),
           );
         });
@@ -77,7 +86,9 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _controller.isLoaded) {
-      _maybeShowNegativeStockReminder(force: true);
+      _maybeShowNegativeStockReminder(force: true).then((_) {
+        _maybeShowExternalBackupReminder();
+      });
       _controller.syncFromSheetInBackground();
     } else if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive) &&
@@ -206,6 +217,70 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
     }
   }
 
+  Future<void> _maybeShowExternalBackupReminder() async {
+    if (!mounted ||
+        _reminderDialogOpen ||
+        !_controller.shouldPromptExternalBackup) {
+      return;
+    }
+    final navContext = _navigatorKey.currentContext;
+    if (navContext == null) return;
+
+    _reminderDialogOpen = true;
+    final strings = _controller.strings;
+    final lastRaw = _controller.lastExternalBackupAt;
+    final lastDt = lastRaw.isNotEmpty ? DateTime.tryParse(lastRaw) : null;
+
+    try {
+      final shareNow = await showDialog<bool>(
+        context: navContext,
+        builder: (ctx) => AlertDialog(
+          icon: Icon(
+            Icons.cloud_upload_outlined,
+            color: Theme.of(ctx).colorScheme.primary,
+            size: 32,
+          ),
+          title: Text(strings.externalBackupReminderTitle),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(strings.externalBackupReminderBody),
+              if (lastDt != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  strings.lastExternalBackupLabel(formatDateTime(lastDt)),
+                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(strings.remindLaterBtn),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              icon: const Icon(Icons.share_outlined, size: 18),
+              label: Text(strings.saveBackupOutsidePhoneBtn),
+            ),
+          ],
+        ),
+      );
+
+      if (shareNow == true && navContext.mounted) {
+        await shareJsonBackupOutsidePhone(navContext, _controller);
+      } else {
+        await _controller.snoozeExternalBackupReminder();
+      }
+    } finally {
+      _reminderDialogOpen = false;
+    }
+  }
+
   @override
   void didChangeLocales(List<Locale>? locales) {
     _controller.syncWithSystemLocales(
@@ -258,50 +333,7 @@ class _ShopInventoryAppState extends State<ShopInventoryApp>
 
           return Scaffold(
             resizeToAvoidBottomInset: false,
-            body: Column(
-              children: [
-                if (_controller.isSyncing)
-                  Material(
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 6,
-                        ),
-                        child: Row(
-                          children: [
-                            const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                strings.syncingWithSheetsStatus,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelMedium
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onPrimaryContainer,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                Expanded(child: screens[safeIndex]),
-              ],
-            ),
+            body: screens[safeIndex],
             bottomNavigationBar: NavigationBar(
               selectedIndex: safeIndex,
               onDestinationSelected: (index) {

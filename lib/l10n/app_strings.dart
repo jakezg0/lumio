@@ -129,10 +129,19 @@ class AppStrings {
       _pick('Record purchase as expense', 'Записать закупку в расходы', 'Шығын ретінде тіркеу');
   String get receiveStockAction =>
       _pick('Receive Stock', 'Оформить приход', 'Кірісті рәсімдеу');
-  String stockInSavedMsg(int units) => _pick(
-        'Received $units units into stock',
-        'Оприходовано $units шт. на склад',
-        'Қоймаға $units дана қабылданды',
+  static String _q(num v) {
+    if ((v - v.roundToDouble()).abs() < 0.0005) return v.round().toString();
+    var s = v.toStringAsFixed(3);
+    while (s.contains('.') && (s.endsWith('0') || s.endsWith('.'))) {
+      s = s.substring(0, s.length - 1);
+    }
+    return s;
+  }
+
+  String stockInSavedMsg(num units) => _pick(
+        'Received ${_q(units)} units into stock',
+        'Оприходовано ${_q(units)} шт. на склад',
+        'Қоймаға ${_q(units)} дана қабылданды',
       );
   String get applyStocktakeAction =>
       _pick('Apply Stocktake', 'Применить ревизию', 'Түгендеуді сақтау');
@@ -164,15 +173,15 @@ class AppStrings {
   String lowStockFilter(int count) =>
       _pick('Low Stock ($count)', 'Мало ($count)', 'Аз қалды ($count)');
   String get productsLabel => _pick('Products', 'Товары', 'Тауарлар');
-  String unitsCount(int count) => _pick('$count units', '$count шт.', '$count дана');
+  String unitsCount(num count) => _pick('${_q(count)} units', '${_q(count)} шт.', '${_q(count)} дана');
   String get stockValueLabel => _pick('Stock Value', 'Сумма склада', 'Қор құны');
   String get costBasisLabel => _pick('Cost basis', 'По закупке', 'Өзіндік құн');
   String get todayProfitLabel => _pick('Today Profit', 'Прибыль сегодня', 'Бүгінгі пайда');
   String revSubtitle(String rev) => _pick('Rev $rev', 'Выручка $rev', 'Түсім $rev');
   String get outOfStock => _pick('Out of stock', 'Нет в наличии', 'Таусылды');
-  String lowStockBadge(int count) => _pick('Low: $count', 'Мало: $count', 'Аз: $count');
-  String inStockBadge(int count) =>
-      _pick('In stock: $count', 'В наличии: $count', 'Қолда бар: $count');
+  String lowStockBadge(num count) => _pick('Low: ${_q(count)}', 'Мало: ${_q(count)}', 'Аз: ${_q(count)}');
+  String inStockBadge(num count) =>
+      _pick('In stock: ${_q(count)}', 'В наличии: ${_q(count)}', 'Қолда бар: ${_q(count)}');
   String get sellShort => _pick('Sell', 'Цена', 'Сату');
   String get costShort => _pick('Cost', 'Закуп', 'Өзіндік');
   String get marginShort => _pick('Margin', 'Маржа', 'Маржа');
@@ -248,16 +257,16 @@ class AppStrings {
       );
   String get noMatchingProducts =>
       _pick('No matching products.', 'Товары не найдены.', 'Сәйкес тауар табылмады.');
-  String stockCountLabel(int count) => _pick('Stock: $count', 'Остаток: $count', 'Қалдық: $count');
-  String inCartLabel(int count) => _pick('In cart: $count', 'В корзине: $count', 'Себетте: $count');
+  String stockCountLabel(num count) => _pick('Stock: ${_q(count)}', 'Остаток: ${_q(count)}', 'Қалдық: ${_q(count)}');
+  String inCartLabel(num count) => _pick('In cart: ${_q(count)}', 'В корзине: ${_q(count)}', 'Себетте: ${_q(count)}');
   String get outShort => _pick('Out', 'Нет', 'Жоқ');
   String get addShort => _pick('Add', 'Добавить', 'Қосу');
   String outOfStockMsg(String name) =>
       _pick('$name is out of stock', '$name нет в наличии', '$name қоймада жоқ');
-  String onlyLeftMsg(int count) =>
-      _pick('Only $count left in stock', 'В наличии только $count шт.', 'Қоймада тек $count дана қалды');
-  String cartSummary(int count, String total) =>
-      _pick('$count item(s) • $total', '$count шт. • $total', '$count дана • $total');
+  String onlyLeftMsg(num count) =>
+      _pick('Only ${_q(count)} left in stock', 'В наличии только ${_q(count)} шт.', 'Қоймада тек ${_q(count)} дана қалды');
+  String cartSummary(num count, String total) =>
+      _pick('${_q(count)} item(s) • $total', '${_q(count)} шт. • $total', '${_q(count)} дана • $total');
   String estProfit(String profit) =>
       _pick('Est. profit: $profit', 'Ожид. прибыль: $profit', 'Болжамды пайда: $profit');
   String get checkout => _pick('Checkout', 'Оплата', 'Төлем');
@@ -283,10 +292,10 @@ class AppStrings {
   String get selectDueDate => _pick('Select due date (optional)', 'Выбрать срок (необяз.)', 'Мерзімді таңдау (міндетті емес)');
   String get totalDue => _pick('Total Due', 'Итого к оплате', 'Төленетін сома');
   String get completeSale => _pick('Complete Sale', 'Завершить продажу', 'Сатуды аяқтау');
-  String saleRecordedMsg(String total, int units) => _pick(
-        'Sale recorded: $total ($units items)',
-        'Продажа оформлена: $total ($units шт.)',
-        'Сатылым тіркелді: $total ($units дана)',
+  String saleRecordedMsg(String total, num units) => _pick(
+        'Sale recorded: $total (${_q(units)} items)',
+        'Продажа оформлена: $total (${_q(units)} шт.)',
+        'Сатылым тіркелді: $total (${_q(units)} дана)',
       );
 
   // Payment methods
@@ -346,7 +355,8 @@ class AppStrings {
         'Нет продаж за период: $filterLabel.',
         '$filterLabel бойынша сатылым жоқ.',
       );
-  String unitsShort(int count) => _pick('$count units', '$count шт.', '$count дана');
+  String unitsShort(num count) => _pick('${_q(count)} units', '${_q(count)} шт.', '${_q(count)} дана');
+  String itemsShort(int count) => _pick('$count items', '$count поз.', '$count тауар');
   String get paidBadge => _pick('Paid', 'Оплачено', 'Төленді');
   String unpaidBadge(String remaining) =>
       _pick('Due: $remaining', 'Долг: $remaining', 'Қарыз: $remaining');
@@ -569,10 +579,10 @@ class AppStrings {
         'Перемещено в «$group»: $count поз.',
         '«$group» тобына жылжытылды: $count тауар',
       );
-  String scannedAddedToStockInMsg(int added, String name, int totalQty) => _pick(
-        '+$added: $name (in stock-in: $totalQty)',
-        '+$added: $name (в приходе: $totalQty)',
-        '+$added: $name (кірісте: $totalQty)',
+  String scannedAddedToStockInMsg(num added, String name, num totalQty) => _pick(
+        '+${_q(added)}: $name (in stock-in: ${_q(totalQty)})',
+        '+${_q(added)}: $name (в приходе: ${_q(totalQty)})',
+        '+${_q(added)}: $name (кірісте: ${_q(totalQty)})',
       );
   String inStockFilter(int count) =>
       _pick('In Stock ($count)', 'В наличии ($count)', 'Қолда бар ($count)');
@@ -680,11 +690,11 @@ class AppStrings {
       );
   String get resumeSaleAction =>
       _pick('Resume', 'Продолжить', 'Жалғастыру');
-  String scannedAddedToStocktakeMsg(int added, String name, int actualQty) =>
+  String scannedAddedToStocktakeMsg(num added, String name, num actualQty) =>
       _pick(
-        '+$added: $name (actual: $actualQty)',
-        '+$added: $name (факт: $actualQty)',
-        '+$added: $name (нақты: $actualQty)',
+        '+${_q(added)}: $name (actual: ${_q(actualQty)})',
+        '+${_q(added)}: $name (факт: ${_q(actualQty)})',
+        '+${_q(added)}: $name (нақты: ${_q(actualQty)})',
       );
   String get countFromZeroLabel =>
       _pick('From 0', 'Считать с нуля', 'Нөлден санау');
@@ -706,10 +716,10 @@ class AppStrings {
         'Итого расхождений ($count)',
         'Айырмашылық қорытындысы ($count)',
       );
-  String scannedAddedToCartMsg(int added, String name, int totalQty) => _pick(
-        '+$added: $name (in cart: $totalQty)',
-        '+$added: $name (в корзине: $totalQty)',
-        '+$added: $name (себетте: $totalQty)',
+  String scannedAddedToCartMsg(num added, String name, num totalQty) => _pick(
+        '+${_q(added)}: $name (in cart: ${_q(totalQty)})',
+        '+${_q(added)}: $name (в корзине: ${_q(totalQty)})',
+        '+${_q(added)}: $name (себетте: ${_q(totalQty)})',
       );
   String get cashReceivedLabel => _pick(
         'Received from customer',
@@ -764,10 +774,10 @@ class AppStrings {
       _pick('Add to Stock-In', 'В приход', 'Кіріске қосу');
   String get addToCartAction =>
       _pick('Add to Cart', 'В корзину', 'Себетке қосу');
-  String addedToCartMsg(String name, int qty) => _pick(
-        '$name added to cart ($qty)',
-        '$name добавлен в корзину ($qty)',
-        '$name себетке қосылды ($qty)',
+  String addedToCartMsg(String name, num qty) => _pick(
+        '$name added to cart (${_q(qty)})',
+        '$name добавлен в корзину (${_q(qty)})',
+        '$name себетке қосылды (${_q(qty)})',
       );
   String get autoLanguageLabel =>
       _pick('Auto (Device)', 'Авто (телефон)', 'Авто (құрылғы)');
@@ -1107,10 +1117,10 @@ class AppStrings {
         'Удалить накладную?',
         'Жүкқұжатты жою керек пе?',
       );
-  String deleteStockInBody(int units) => _pick(
-        'Delete this stock-in invoice and roll back stock (-$units units)?',
-        'Удалить приходную накладную и откатить остатки на складе (−$units шт.)?',
-        'Бұл кіріс жүкқұжатын жойып, қойма қалдығын қайтару керек пе (−$units дана)?',
+  String deleteStockInBody(num units) => _pick(
+        'Delete this stock-in invoice and roll back stock (-${_q(units)} units)?',
+        'Удалить приходную накладную и откатить остатки на складе (−${_q(units)} шт.)?',
+        'Бұл кіріс жүкқұжатын жойып, қойма қалдығын қайтару керек пе (−${_q(units)} дана)?',
       );
   String get stockInDeletedMsg => _pick(
         'Invoice deleted, stock rolled back',
@@ -1395,15 +1405,25 @@ class AppStrings {
         'В Google Таблице ещё нет полного бэкапа. Сначала нажмите «Выгрузить всё».',
         'Google Кестеде толық сақтық көшірме жоқ. Алдымен «Барлығын жүктеу» түймесін басыңыз.',
       );
+  String get restorePrevFromSheetsBtn => _pick(
+        'Restore Yesterday\'s Backup (_Backup_Prev)',
+        'Восстановить вчерашнюю копию (_Backup_Prev)',
+        'Кешегі көшірмені қалпына келтіру (_Backup_Prev)',
+      );
+  String get noPrevCloudBackupMsg => _pick(
+        'No yesterday\'s backup (_Backup_Prev) yet. It is created automatically before the next day\'s overwrite.',
+        'Вчерашней копии (_Backup_Prev) ещё нет — она создаётся автоматически перед перезаписью на следующий день.',
+        'Кешегі көшірме (_Backup_Prev) әлі жоқ — ол келесі күні қайта жазу алдында автоматты жасалады.',
+      );
   String get autoBackupLabel => _pick(
         'Auto-Sync Changes to Sheets',
         'Автосинхронизация в Google Таблицу',
         'Google Кестеге автосинхрондау',
       );
   String get autoBackupHint => _pick(
-        'Automatically updates only changed tabs and _Backup to save traffic',
-        'Автоматически обновляет только изменённые листы и _Backup (экономит трафик)',
-        'Тек өзгерген парақтар мен _Backup-ты автоматты жаңартады (трафикті үнемдейді)',
+        'Instantly syncs Catalog, Sales & _Backup; heavy tabs (History, Snapshots, etc.) sync once a day or manually',
+        'Мгновенно обновляет Каталог, Продажи и _Backup; тяжёлые листы (История, Снимки и др.) — раз в день или по кнопке',
+        'Каталог, Сатылымдар және _Backup-ты лезде жаңартады; ауыр парақтар (Тарих, Суреттер т.б.) — күніне 1 рет немесе батырмамен',
       );
   String lastAutoBackupStatus(String time) => _pick(
         'Last auto-backup: $time',
@@ -1657,10 +1677,10 @@ class AppStrings {
         'Макс. маржа',
         'Ең жоғары маржа',
       );
-  String soldUnitsBadge(int count) => _pick(
-        'Sold: $count',
-        'Продано: $count',
-        'Сатылды: $count',
+  String soldUnitsBadge(num count) => _pick(
+        'Sold: ${_q(count)}',
+        'Продано: ${_q(count)}',
+        'Сатылды: ${_q(count)}',
       );
   String get analyticsTopTab => _pick('Goods', 'Товары', 'Тауарлар');
   String get analyticsTimeTab =>
@@ -1992,10 +2012,10 @@ class AppStrings {
         'Скоро закончится: $name',
         'Таусылуға жақын: $name',
       );
-  String adviceLowStockHitBody(int stock, int estDays) => _pick(
-        'Only $stock left (~$estDays d of sales at current pace). Order ahead to avoid stockout.',
-        'Осталось $stock шт. (примерно на $estDays дн. продаж). Закажите заранее, чтобы не уйти в простой.',
-        'Тек $stock дана қалды (шамамен $estDays күнге жетеді). Алдын ала тапсырыс беріңіз.',
+  String adviceLowStockHitBody(num stock, int estDays) => _pick(
+        'Only ${_q(stock)} left (~$estDays d of sales at current pace). Order ahead to avoid stockout.',
+        'Осталось ${_q(stock)} шт. (примерно на $estDays дн. продаж). Закажите заранее, чтобы не уйти в простой.',
+        'Тек ${_q(stock)} дана қалды (шамамен $estDays күнге жетеді). Алдын ала тапсырыс беріңіз.',
       );
   String adviceMarginDropTitle(String name) => _pick(
         'Cost went up: $name',
@@ -2028,10 +2048,10 @@ class AppStrings {
         'Залежался товар: $name',
         'Өтпей тұрған тауар: $name',
       );
-  String adviceDeadStockBody(int stock, String frozenAmount) => _pick(
-        '$stock in stock ($frozenAmount frozen) with 0 sales in 30 days. Try a promo discount or bundle.',
-        'На складе $stock шт. (заморожено $frozenAmount), за 30 дней не было продаж. Сделайте акцию или комплект.',
-        'Қоймада $stock дана ($frozenAmount тоқтап тұр), 30 күнде сатылым жоқ. Акция немесе жеңілдік жасап көріңіз.',
+  String adviceDeadStockBody(num stock, String frozenAmount) => _pick(
+        '${_q(stock)} in stock ($frozenAmount frozen) with 0 sales in 30 days. Try a promo discount or bundle.',
+        'На складе ${_q(stock)} шт. (заморожено $frozenAmount), за 30 дней не было продаж. Сделайте акцию или комплект.',
+        'Қоймада ${_q(stock)} дана ($frozenAmount тоқтап тұр), 30 күнде сатылым жоқ. Акция немесе жеңілдік жасап көріңіз.',
       );
   String advicePeakDayTitle(String weekdayName) => _pick(
         'Peak sales day ahead: $weekdayName',
@@ -2066,10 +2086,27 @@ class AppStrings {
         'Оптовая цена (необяз.)',
         'Көтерме баға (міндетті емес)',
       );
+  String get wholesaleMinQtyLabel => _pick(
+        'Wholesale from (qty)',
+        'Опт от (шт.)',
+        'Көтерме (данадан)',
+      );
   String get wholesaleShort => _pick('Wholesale', 'Опт', 'Көтерме');
   String get wholesaleModeChip =>
       _pick('Wholesale', 'Оптовые цены', 'Көтерме баға');
   String get wholesaleAppliedBadge => _pick('Wholesale', 'Опт', 'Көтерме');
+  String wholesaleFromQtyBadge(int qty) =>
+      _pick('from $qty pcs', 'от $qty шт.', '$qty данадан');
+  String addMoreForWholesaleBtn(num remaining, String price) => _pick(
+        '+${_q(remaining)} for $price',
+        '+${_q(remaining)} шт. → опт по $price',
+        '+${_q(remaining)} дана → $price',
+      );
+  String autoWholesaleActiveBadge(int qty) => _pick(
+        'Auto-wholesale (≥$qty)',
+        'Авто-опт (от $qty шт.)',
+        'Авто-көтерме ($qty+)',
+      );
 
   // Monthly inventory value snapshots
   String get byCategoriesTab =>
@@ -2098,10 +2135,10 @@ class AppStrings {
       );
   String snapshotCapturedLabel(String date) =>
       _pick('Captured: $date', 'Снимок: $date', 'Уақыты: $date');
-  String snapshotItemsUnits(int items, int units) => _pick(
-        '$items items • $units units',
-        '$items поз. • $units шт.',
-        '$items тауар • $units дана',
+  String snapshotItemsUnits(int items, num units) => _pick(
+        '$items items • ${_q(units)} units',
+        '$items поз. • ${_q(units)} шт.',
+        '$items тауар • ${_q(units)} дана',
       );
 
   // Built-in feature usage statistics
@@ -2316,5 +2353,1196 @@ class AppStrings {
         'Next Advice',
         'Другой совет',
         'Басқа кеңес',
+      );
+
+  // WhatsApp debtor reminder
+  String get remindWhatsAppBtn => _pick(
+        'Remind in WhatsApp',
+        'Напомнить в WhatsApp',
+        'WhatsApp-қа еске салу',
+      );
+  String get debtReminderSubject => _pick(
+        'Payment Reminder',
+        'Напоминание об оплате',
+        'Төлем туралы еске салу',
+      );
+  String debtReminderMessage({
+    required String customerName,
+    required String amount,
+    String? dueDate,
+    bool isOverdue = false,
+    String shopName = '',
+  }) {
+    final cleanName = customerName.trim();
+    final hasName = cleanName.isNotEmpty && cleanName.toLowerCase() != 'unknown';
+    final cleanShop = shopName.trim();
+    final dueEn = dueDate != null
+        ? (isOverdue ? ' (overdue since $dueDate)' : ' (due date: $dueDate)')
+        : '';
+    final dueRu = dueDate != null
+        ? (isOverdue
+            ? ' (просрочено с $dueDate)'
+            : ' (срок оплаты: $dueDate)')
+        : '';
+    final dueKk = dueDate != null
+        ? (isOverdue
+            ? ' ($dueDate мерзімі өтіп кеткен)'
+            : ' (төлем мерзімі: $dueDate)')
+        : '';
+    final shopEn = cleanShop.isNotEmpty ? ' at $cleanShop' : '';
+    final shopRu = cleanShop.isNotEmpty ? ' в магазине «$cleanShop»' : '';
+    final shopKk = cleanShop.isNotEmpty ? ' «$cleanShop» дүкеніндегі' : '';
+
+    return _pick(
+      '${hasName ? 'Hello, $cleanName!' : 'Hello!'} This is a friendly reminder regarding your remaining balance of $amount$shopEn$dueEn. Thank you!',
+      '${hasName ? 'Здравствуйте, $cleanName!' : 'Здравствуйте!'} Напоминаем об остатке оплаты$shopRu на сумму $amount$dueRu. Будем благодарны за оплату. Спасибо!',
+      '${hasName ? 'Сәлеметсіз бе, $cleanName!' : 'Сәлеметсіз бе!'} $shopKk $amount сомасындағы қалған төлем туралы еске саламыз$dueKk. Төлем жасағаныңыз үшін рахмет!',
+    );
+  }
+
+  // Missing regular/wholesale customer advice
+  String adviceMissingCustomerTitle(String name) => _pick(
+        'Check in with $name',
+        'Пропал постоянный клиент: $name',
+        'Тұрақты клиент көрінбей кетті: $name',
+      );
+  String adviceMissingCustomerBody(
+    int daysSince,
+    int usualDays,
+    String totalSpent,
+  ) =>
+      _pick(
+        'Usually buys every ~$usualDays d, but no orders for $daysSince d (total: $totalSpent). Message them on WhatsApp.',
+        'Обычно покупает раз в ~$usualDays дн., но не заходил уже $daysSince дн. (всего покупок: $totalSpent). Напишите в WhatsApp.',
+        'Әдетте шамамен $usualDays күн сайын келетін, бірақ $daysSince күннен бері тапсырыс жоқ (барлығы: $totalSpent). WhatsApp-қа жазыңыз.',
+      );
+  String get adviceWriteWhatsAppBtn => _pick(
+        'Write in WhatsApp',
+        'Написать в WhatsApp',
+        'WhatsApp-қа жазу',
+      );
+  String missingCustomerWhatsAppMsg({
+    required String customerName,
+    String shopName = '',
+  }) {
+    final cleanName = customerName.trim();
+    final cleanShop = shopName.trim();
+    final shopEn = cleanShop.isNotEmpty ? ' at $cleanShop' : '';
+    final shopRu = cleanShop.isNotEmpty ? ' в «$cleanShop»' : '';
+    final shopKk = cleanShop.isNotEmpty ? '«$cleanShop» дүкеніне ' : '';
+    return _pick(
+      'Hello, $cleanName! We haven\'t seen you in a while$shopEn. Let us know if you need anything or would like our latest prices!',
+      'Здравствуйте, $cleanName! Давно вас не было видно$shopRu. Если что-то нужно или прислать актуальные цены и новинки — напишите нам!',
+      'Сәлеметсіз бе, $cleanName! $shopKkкөптен бері көрінбей кеттіңіз. Егер тауар керек болса немесе жаңа бағалар тізімін жіберу керек болса, хабарласыңыз!',
+    );
+  }
+
+  // Shift Closing
+  String get shiftClosingBtn => _pick(
+        'Close Shift',
+        'Закрытие смены',
+        'Ауысымды жабу',
+      );
+  String get shiftClosingTitle => _pick(
+        'Shift Closing',
+        'Закрытие смены',
+        'Ауысымды жабу',
+      );
+  String get shiftPaymentBreakdownHeader => _pick(
+        'By Payment Method',
+        'По способам оплаты',
+        'Төлем тәсілдері бойынша',
+      );
+  String get shiftCashReconciliationHeader => _pick(
+        'Cash Drawer Check',
+        'Сверка наличных в кассе',
+        'Кассадағы қолма-қол ақшаны тексеру',
+      );
+  String get shiftOpeningFloatLabel => _pick(
+        'Opening float (optional)',
+        'Размен на начало смены (необяз.)',
+        'Ауысым басындағы қалдық (міндетті емес)',
+      );
+  String get shiftExpectedCashLabel => _pick(
+        'Expected in drawer',
+        'Ожидается в кассе',
+        'Кассада күтілетін сома',
+      );
+  String get shiftCashFormulaHint => _pick(
+        'Opening float + Cash sales − Today expenses',
+        'Размен + Наличные продажи − Расходы за день',
+        'Бастапқы қалдық + Қолма-қол сатылым − Бүгінгі шығындар',
+      );
+  String get shiftActualCashLabel => _pick(
+        'Actual cash in drawer',
+        'Фактически наличных в кассе',
+        'Кассадағы нақты қолма-қол ақша',
+      );
+  String get shiftActualCashHint => _pick(
+        'Count cash and enter amount',
+        'Пересчитайте и введите сумму',
+        'Санап, соманы енгізіңіз',
+      );
+  String shiftSurplusLabel(String amount) => _pick(
+        'Surplus: +$amount',
+        'Излишек: +$amount',
+        'Артық: +$amount',
+      );
+  String shiftShortageLabel(String amount) => _pick(
+        'Shortage: -$amount',
+        'Недостача: -$amount',
+        'Жетіспеушілік: -$amount',
+      );
+  String get shiftExactMatchLabel => _pick(
+        'Exact match (0)',
+        'Сошлось ровно (0)',
+        'Дәл сәйкес келді (0)',
+      );
+  String get shiftCashierHiddenNote => _pick(
+        'Cashier Mode: cost & profit are hidden in the report',
+        'Режим продавца: закупка и прибыль скрыты в отчёте',
+        'Сатушы режимі: өзіндік құн мен пайда есепте көрсетілмейді',
+      );
+  String get shiftNoSalesTodayNote => _pick(
+        'No sales recorded today yet.',
+        'За сегодня продаж пока нет.',
+        'Бүгінге сатылымдар әлі жоқ.',
+      );
+
+  // Cashier receipt immutability
+  String get cashierReceiptImmutableNote => _pick(
+        'Cashier Mode: deleting receipts is disabled without Owner PIN. Only Return / Exchange is allowed.',
+        'В режиме продавца удаление чеков запрещено без PIN-кода владельца — доступен только «Возврат / Обмен».',
+        'Сатушы режимінде иесінің PIN-кодынсыз чектерді жоюға тыйым салынған — тек «Қайтару / Айырбастау» қолжетімді.',
+      );
+  String get ownerPinRequiredTitle => _pick(
+        'Owner PIN Required',
+        'Требуется PIN-код владельца',
+        'Иесінің PIN-коды қажет',
+      );
+  String get ownerPinNotSetForDeleteMsg => _pick(
+        'Owner PIN is not set. Unlock Owner Mode in Settings to delete or archive receipts.',
+        'PIN-код владельца не задан. Перейдите в режим владельца в Настройках, чтобы удалить или архивировать чек.',
+        'Иесінің PIN-коды орнатылмаған. Чекті жою немесе мұрағаттау үшін Баптауларда иесі режиміне өтіңіз.',
+      );
+
+  // Split data vs settings restore
+  String get restoreScopeTitle => _pick(
+        'What to restore?',
+        'Что восстановить?',
+        'Нені қалпына келтіру керек?',
+      );
+  String get restoreDataOnlyOption => _pick(
+        'Goods, sales & debts only',
+        'Только товары, продажи и долги',
+        'Тек тауарлар, сатылымдар және қарыздар',
+      );
+  String get restoreDataOnlyHint => _pick(
+        'Keeps your current app settings, language, currency, and PIN on this phone',
+        'Сохранит текущие настройки, язык, валюту и PIN-код на этом телефоне',
+        'Осы телефондағы ағымдағы баптауларды, тілді, валютаны және PIN-кодты сақтайды',
+      );
+  String get restoreAllWithSettingsOption => _pick(
+        'Everything including settings & PIN',
+        'Всё вместе с настройками и PIN-кодом',
+        'Баптаулар және PIN-кодпен бірге бәрін',
+      );
+  String get restoreAllWithSettingsHint => _pick(
+        'Also replaces shop info, language, currency, mode, and Owner PIN',
+        'Заменит также данные магазина, язык, валюту, режим и PIN-код владельца',
+        'Дүкен деректерін, тілді, валютаны, режимді және иесінің PIN-кодын да алмастырады',
+      );
+
+  // External backup reminder (Google Drive / Telegram)
+  String get saveBackupOutsidePhoneBtn => _pick(
+        'Save Backup Outside Phone',
+        'Сохранить копию вне телефона',
+        'Көшірмені телефоннан тыс сақтау',
+      );
+  String get externalBackupReminderTitle => _pick(
+        'Back Up Outside This Phone',
+        'Сохраните копию вне телефона',
+        'Көшірмені телефоннан тыс сақтаңыз',
+      );
+  String get externalBackupReminderBody => _pick(
+        'If this phone is lost or the app is uninstalled, local data is erased. Send a .json copy to Google Drive or Telegram Saved Messages so your shop data is always safe.',
+        'При удалении приложения или поломке телефона внутренняя база стирается. Отправьте .json-копию в Google Диск или Telegram «Избранное», чтобы данные всегда были в безопасности.',
+        'Қолданбаны өшіргенде немесе телефон бұзылғанда ішкі дерекқор жойылады. Деректерді сақтау үшін .json көшірмесін Google Drive немесе Telegram-дағы «Сақталғандар» бөліміне жіберіңіз.',
+      );
+  String lastExternalBackupLabel(String date) => _pick(
+        'Last external backup: $date',
+        'Последняя выгрузка вне телефона: $date',
+        'Соңғы сыртқы көшірме: $date',
+      );
+  String get externalBackupOpenedMsg => _pick(
+        'Choose Google Drive or Telegram to save your backup',
+        'Выберите Google Диск или Telegram «Избранное» для сохранения копии',
+        'Көшірмені сақтау үшін Google Drive немесе Telegram-ды таңдаңыз',
+      );
+
+  // Cloud backup shrink / rollback protection
+  String get cloudBackupShrinkWarningTitle => _pick(
+        'Cloud Backup Blocked',
+        'Автобэкап заблокирован',
+        'Автобэкап бұғатталды',
+      );
+  String cloudBackupShrinkBlockedMsg(
+    int prevProducts,
+    int curProducts,
+    int prevSales,
+    int curSales,
+  ) =>
+      _pick(
+        'Sharp drop detected before uploading _Backup (goods: $prevProducts → $curProducts, sales: $prevSales → $curSales). Auto-overwrite was blocked to protect your cloud data.',
+        'Обнаружено резкое падение количества перед отправкой _Backup (товары: $prevProducts → $curProducts, продажи: $prevSales → $curSales). Авто-перезапись заблокирована, чтобы не потерять облачную копию.',
+        '_Backup жіберу алдында деректер саны күрт азайғаны анықталды (тауарлар: $prevProducts → $curProducts, сатылымдар: $prevSales → $curSales). Бұлттық көшірмені қорғау үшін авто-қайта жазу бұғатталды.',
+      );
+  String get cloudBackupOverrideBtn => _pick(
+        'Overwrite _Backup Anyway',
+        'Всё равно перезаписать _Backup',
+        'Бәрібір _Backup-ты қайта жазу',
+      );
+  String get pendingSyncStatus => _pick(
+        'Pending changes waiting to sync',
+        'Есть неотправленные изменения (ждут сети)',
+        'Жіберілмеген өзгерістер бар (желіні күтуде)',
+      );
+  String get deleteForeverConfirmTitle => _pick(
+        'Delete forever?',
+        'Удалить навсегда?',
+        'Біржола жою керек пе?',
+      );
+  String deleteForeverItemBody(String name) => _pick(
+        'Permanently delete "$name"? This cannot be undone.',
+        'Удалить «$name» навсегда? Это действие нельзя отменить.',
+        '«$name» біржола жойылсын ба? Бұл әрекетті қайтару мүмкін емес.',
+      );
+  String deleteForeverSelectedBody(int count) => _pick(
+        'Permanently delete $count selected item(s)? This cannot be undone.',
+        'Удалить навсегда выбранные позиции ($count)? Это действие нельзя отменить.',
+        'Таңдалған $count элементті біржола жою керек пе? Бұл әрекетті қайтару мүмкін емес.',
+      );
+  String get enterOwnerPinToConfirm => _pick(
+        'Enter Owner PIN to confirm',
+        'Введите PIN-код владельца',
+        'Растау үшін иесінің PIN-кодын енгізіңіз',
+      );
+  String remoteCatalogOverwriteBlockedMsg(
+    int remoteProducts,
+    int localProducts,
+  ) =>
+      _pick(
+        'Google Sheet already has $remoteProducts products, while this phone only has $localProducts. Upload was blocked to avoid wiping your cloud catalog. Restore from Google Sheets or confirm overwrite.',
+        'В Google Таблице уже есть $remoteProducts товаров, а на этом телефоне только $localProducts. Выгрузка заблокирована, чтобы не затереть облачный каталог. Восстановите базу из таблицы или подтвердите перезапись.',
+        'Google Кестеде $remoteProducts тауар бар, ал бұл телефонда тек $localProducts тауар. Бұлттық каталогты өшіріп алмау үшін жүктеу бұғатталды. Кестеден қалпына келтіріңіз немесе қайта жазуды растаңыз.',
+      );
+  String get rollbackLastRestoreBtn => _pick(
+        'Rollback Last Restore',
+        'Откатить последнее восстановление',
+        'Соңғы қалпына келтіруді қайтару',
+      );
+  String get rollbackRestoreTitle => _pick(
+        'Rollback to pre-restore state?',
+        'Откатить восстановление?',
+        'Қалпына келтіруді болдырмау керек пе?',
+      );
+  String rollbackRestoreBody(String? savedAt) => _pick(
+        'Restore the automatic snapshot saved right before the last restore${savedAt != null && savedAt.isNotEmpty ? ' ($savedAt)' : ''}?',
+        'Вернуть автоматический слепок базы, сохранённый прямо перед последним восстановлением${savedAt != null && savedAt.isNotEmpty ? ' ($savedAt)' : ''}?',
+        'Соңғы қалпына келтіру алдында автоматты сақталған дерекқор күйіне${savedAt != null && savedAt.isNotEmpty ? ' ($savedAt)' : ''} оралу керек пе?',
+      );
+  String get rollbackRestoredMsg => _pick(
+        'Rolled back to pre-restore snapshot',
+        'База откатана к состоянию до восстановления',
+        'Дерекқор қалпына келтіруге дейінгі күйге оралды',
+      );
+  String get noPreRestoreBackupMsg => _pick(
+        'No pre-restore snapshot found.',
+        'Резервный слепок до восстановления не найден.',
+        'Қалпына келтіруге дейінгі резервтік көшірме табылмады.',
+      );
+  String get preRestoreBackupSavedNote => _pick(
+        'Previous data was saved automatically (you can roll back).',
+        'Предыдущие данные сохранены автоматически (можно откатить).',
+        'Алдыңғы деректер автоматты сақталды (кері қайтаруға болады).',
+      );
+
+  // Year-End Archiving
+  String get yearEndArchiveBtn => _pick(
+        'Year-End Archive (Close Year)',
+        'Закрытие года (архивация)',
+        'Жылды жабу (мұрағаттау)',
+      );
+  String get yearEndArchiveTitle => _pick(
+        'Year-End Archive',
+        'Закрытие года',
+        'Жылды жабу',
+      );
+  String get yearEndArchiveDesc => _pick(
+        'Export past-year sales and stock-in invoices to CSV/JSON files, then compress them to monthly totals so the app stays fast for years.',
+        'Выгрузите продажи и накладные за прошлый год в отдельные файлы CSV/JSON и сожмите их до месячных итогов, чтобы база оставалась быстрой.',
+        'Өткен жылғы сатылымдар мен жүкқұжаттарды CSV/JSON файлдарына жүктеп, қолданба жылдам жұмыс істеуі үшін айлық қорытындыға сығыңыз.',
+      );
+  String get noPastYearsToArchiveMsg => _pick(
+        'No past-year sales or invoices to archive yet.',
+        'Нет продаж или накладных за прошлые годы для архивации.',
+        'Мұрағаттау үшін өткен жылдардағы сатылымдар немесе жүкқұжаттар жоқ.',
+      );
+  String yearSummaryLine(int year, int salesCount, int stockInsCount) => _pick(
+        '$year: $salesCount sale(s), $stockInsCount invoice(s)',
+        '$year г.: $salesCount прод., $stockInsCount накл.',
+        '$year ж.: $salesCount сат., $stockInsCount жүкқ.',
+      );
+  String get exportArchiveOnlyBtn => _pick(
+        'Export Archive (JSON + CSV)',
+        'Только выгрузить (JSON + CSV)',
+        'Тек жүктеу (JSON + CSV)',
+      );
+  String get exportAndCompressYearBtn => _pick(
+        'Export & Compress to Monthly',
+        'Выгрузить и сжать в итоги',
+        'Жүктеу және айлыққа сығу',
+      );
+  String yearCompressedMsg(int year, int salesCount, int stockInsCount) =>
+      _pick(
+        'Year $year archived: compressed $salesCount sales and $stockInsCount invoices into monthly totals.',
+        'Год $year закрыт: сжато $salesCount продаж и $stockInsCount накладных в месячные итоги.',
+        '$year жыл жабылды: $salesCount сатылым және $stockInsCount жүкқұжат айлық қорытындыға сығылды.',
+      );
+  String unpaidDebtsKeptNote(int count) => _pick(
+        '$count unpaid debt receipt(s) kept active.',
+        'Непогашенных долгов оставлено без сжатия: $count.',
+        'Өтелмеген қарыздар сығылмай сақталды: $count.',
+      );
+  String barcodeSelfConflictError(String fieldA, String fieldB, String code) =>
+      _pick(
+        'Barcode "$code" cannot be the same in "$fieldA" and "$fieldB".',
+        'Штрихкод «$code» не может совпадать у полей «$fieldA» и «$fieldB».',
+        '«$code» штрих-коды «$fieldA» және «$fieldB» өрістерінде бірдей болмауы керек.',
+      );
+  String get catalogHealthBtn => _pick(
+        'Catalog Health Check',
+        'Здоровье каталога',
+        'Каталог денсаулығы',
+      );
+  String catalogHealthIssuesCount(int count) => _pick(
+        'Catalog Health ($count issues)',
+        'Здоровье каталога ($count пробл.)',
+        'Каталог денсаулығы ($count мәселе)',
+      );
+  String get catalogHealthOkMsg => _pick(
+        'Catalog looks healthy! No anomalies found.',
+        'Аномалий в каталоге не найдено!',
+        'Каталогта қате табылмады!',
+      );
+  String get healthEmptyName => _pick(
+        'Empty name',
+        'Пустое название',
+        'Атауы бос',
+      );
+  String get healthZeroPrice => _pick(
+        'Zero sell price',
+        'Нулевая цена продажи',
+        'Сату бағасы нөл',
+      );
+  String get healthSellBelowCost => _pick(
+        'Sell price below cost',
+        'Цена продажи ниже закупа',
+        'Сату бағасы өзіндік құннан төмен',
+      );
+  String get healthDuplicateBarcode => _pick(
+        'Duplicate barcode',
+        'Одинаковый штрихкод',
+        'Бірдей штрих-код',
+      );
+  String get healthNegativeStock => _pick(
+        'Negative stock',
+        'Зависший минус остатка',
+        'Минус қалдық',
+      );
+  String importHealthWarningTitle(int count) => _pick(
+        'Data anomalies in import: $count',
+        'Найдены аномалии в импорте: $count',
+        'Импортта қателер табылды: $count',
+      );
+  String get dailyLocalBackupsBtn => _pick(
+        'Daily Local Backups (7 days)',
+        'Автобэкапы по дням (7 копий)',
+        'Күнделікті жергілікті бэкап (7 күн)',
+      );
+  String get dailyLocalBackupsTitle => _pick(
+        'Daily Local Backups',
+        'Локальные копии по дням',
+        'Күнделікті жергілікті көшірмелер',
+      );
+  String get dailyLocalBackupsDesc => _pick(
+        'Saved automatically once a day as compressed .json.gz files on this phone (last 7 days). Works offline.',
+        'Сохраняются автоматически раз в сутки в сжатом виде (.json.gz) в памяти телефона (последние 7 дней). Работает без интернета.',
+        'Күніне бір рет телефон жадында сығылған (.json.gz) түрде автоматты сақталады (соңғы 7 күн). Интернетсіз жұмыс істейді.',
+      );
+  String get noDailyLocalBackupsMsg => _pick(
+        'No daily local backups yet.',
+        'Ещё нет сохранённых ежедневных копий.',
+        'Сақталған күнделікті көшірмелер жоқ.',
+      );
+  String get saveDailyBackupNowBtn => _pick(
+        'Save Today\'s Copy Now',
+        'Сохранить копию за сегодня',
+        'Бүгінгі көшірмені сақтау',
+      );
+  String get dailyBackupSavedMsg => _pick(
+        'Daily local backup saved',
+        'Локальная копия за сегодня сохранена',
+        'Бүгінгі жергілікті көшірме сақталды',
+      );
+  String get cloudNewerWarningTitle => _pick(
+        'Cloud Copy Is Newer',
+        'В облаке более свежая копия',
+        'Бұлттағы көшірме жаңарақ',
+      );
+  String cloudNewerOverwriteBlockedMsg(String cloudDate, String localDate) =>
+      _pick(
+        'Google Sheets has a newer update ($cloudDate) than this phone\'s last sync ($localDate). Uploading now could overwrite recent sales or price edits from another device or computer.',
+        'Облачная копия в Google Таблице новее ($cloudDate), чем последняя синхронизация этого телефона ($localDate). Полная выгрузка может затереть свежие продажи или цены с другого устройства или компьютера.',
+        'Google Кестедегі көшірме ($cloudDate) осы телефонның соңғы синхрондауынан ($localDate) жаңарақ. Қазір жүктеу басқа құрылғыдағы немесе компьютердегі жаңа сатылымдар мен бағаларды өшіруі мүмкін.',
+      );
+  String get localNewerWarningTitle => _pick(
+        'Phone Data Is Newer',
+        'На телефоне более свежие данные',
+        'Телефондағы деректер жаңарақ',
+      );
+  String localNewerRestoreWarningMsg(String localDate, String cloudDate) =>
+      _pick(
+        'This phone has newer changes ($localDate) than the cloud backup ($cloudDate). Restoring from Google Sheets will roll back your latest sales or price edits.',
+        'На этом телефоне есть более свежие изменения ($localDate), чем в облачной копии ($cloudDate). Восстановление из Google Таблицы откатит последние продажи или цены.',
+        'Бұл телефонда бұлттық көшірмеден ($cloudDate) жаңарақ өзгерістер ($localDate) бар. Google Кестеден қалпына келтіру соңғы сатылымдар мен бағаларды кері қайтарады.',
+      );
+  String get overwriteCloudAnywayBtn => _pick(
+        'Overwrite Cloud Anyway',
+        'Всё равно перезаписать облако',
+        'Бәрібір бұлтты қайта жазу',
+      );
+  String get restoreOlderCloudAnywayBtn => _pick(
+        'Restore Older Copy Anyway',
+        'Всё равно восстановить',
+        'Бәрібір қалпына келтіру',
+      );
+  String get neverSyncedLabel => _pick(
+        'never synced',
+        'ещё не синхронизировался',
+        'әлі синхрондалмаған',
+      );
+  String trashAutoPurgeNotice(int days) => _pick(
+        'Items in trash are automatically deleted after $days days.',
+        'Элементы в корзине автоматически удаляются через $days дн.',
+        'Себеттегі жазбалар $days күннен кейін автоматты түрде жойылады.',
+      );
+  String get trashAutoPurgeOffNotice => _pick(
+        'Trash auto-cleanup is off.',
+        'Автоочистка корзины отключена.',
+        'Себетті автотазалау өшірулі.',
+      );
+  String get trashRetentionLabel => _pick(
+        'Auto-clean',
+        'Автоочистка',
+        'Автотазалау',
+      );
+  String trashRetentionDaysOption(int days) => _pick(
+        '$days days',
+        '$days дн.',
+        '$days күн',
+      );
+  String get trashRetentionOffOption => _pick(
+        'Keep forever',
+        'Отключена',
+        'Өшірулі',
+      );
+  String autoPurgeInDays(int days) => _pick(
+        'Auto-delete in ${days}d',
+        'Удалится через $days дн.',
+        '$days күннен кейін жойылады',
+      );
+  String get attachBarcodeToExistingBtn => _pick(
+        'Link to product',
+        'Привязать к товару',
+        'Тауарға байлау',
+      );
+  String get attachBarcodeTitle => _pick(
+        'Link barcode to existing product',
+        'Привязать штрихкод к товару',
+        'Штрихкодты бар тауарға байлау',
+      );
+  String attachBarcodeSubtitle(String code) => _pick(
+        'Barcode: $code',
+        'Штрихкод: $code',
+        'Штрихкод: $code',
+      );
+  String barcodeLinkedMsg(String code, String productName) => _pick(
+        'Barcode $code linked to "$productName"',
+        'Штрихкод $code привязан к «$productName»',
+        '$code штрихкоды «$productName» тауарына байланды',
+      );
+  String barcodeAlreadyLinkedMsg(String productName) => _pick(
+        'Barcode is already linked to "$productName"',
+        'Штрихкод уже привязан к «$productName»',
+        'Бұл штрихкод «$productName» тауарына бұрыннан байланған',
+      );
+  String get extraBarcodesLabel => _pick(
+        'Additional barcodes',
+        'Доп. штрихкоды (партии)',
+        'Қосымша штрихкодтар',
+      );
+  String get createNewProductBtn => _pick(
+        'Create new product',
+        'Создать новый товар',
+        'Жаңа тауар қосу',
+      );
+  String get sendEstimateBtn => _pick(
+        'Send estimate',
+        'Отправить расчёт',
+        'Есептемені жіберу',
+      );
+  String get estimateTitle => _pick(
+        'Price Estimate',
+        'Предварительный расчёт (смета)',
+        'Алдын ала есептеу (смета)',
+      );
+  String get estimateDisclaimer => _pick(
+        'Preliminary estimate — stock is not reserved.',
+        'Предварительный расчёт — товар не списан и не забронирован.',
+        'Алдын ала есептеу — тауар есептен шығарылмаған.',
+      );
+  String get estimateTotalLabel => _pick(
+        'Estimate total',
+        'Итого по смете',
+        'Смета бойынша барлығы',
+      );
+  String estimateItemsUnitsSummary(int items, num units) => _pick(
+        '$items items (${_q(units)} pcs)',
+        'Позиций: $items (${_q(units)} шт.)',
+        'Тауарлар: $items (${_q(units)} дана)',
+      );
+  String get selectSellerShort => _pick(
+        'Seller',
+        'Продавец',
+        'Сатушы',
+      );
+  String get selectSellerTitle => _pick(
+        'Select seller in shift',
+        'Выбор продавца в смене',
+        'Ауысымдағы сатушыны таңдау',
+      );
+  String get noSellerOption => _pick(
+        'Not specified',
+        'Без имени',
+        'Аты көрсетілмеген',
+      );
+  String get addSellerHint => _pick(
+        'New seller name',
+        'Имя нового продавца',
+        'Жаңа сатушының аты',
+      );
+  String get addSellerBtn => _pick(
+        'Add',
+        'Добавить',
+        'Қосу',
+      );
+  String sellerLabel(String name) => _pick(
+        'Seller: $name',
+        'Продавец: $name',
+        'Сатушы: $name',
+      );
+  String get shiftBySellerHeader => _pick(
+        'By seller',
+        'По продавцам',
+        'Сатушылар бойынша',
+      );
+  String get unspecifiedSellerLabel => _pick(
+        'Unspecified',
+        'Не указан',
+        'Көрсетілмеген',
+      );
+  String get priceTagQueueTitle => _pick(
+        'Price tags to print',
+        'На печать ценников',
+        'Баға белгісін басып шығару',
+      );
+  String priceTagQueueBanner(int count) => _pick(
+        'Price changed — update price tags ($count)',
+        'Цена изменилась — обновите ценники ($count)',
+        'Баға өзгерді — баға белгісін жаңартыңыз ($count)',
+      );
+  String get markPrintedAction => _pick(
+        'Printed',
+        'Напечатано',
+        'Басылды',
+      );
+  String get clearPriceTagQueueBtn => _pick(
+        'Clear list',
+        'Очистить список',
+        'Тізімді тазарту',
+      );
+  String get priceTagQueueEmpty => _pick(
+        'Price tag print list is empty',
+        'Список на печать ценников пуст',
+        'Баға белгілерінің тізімі бос',
+      );
+  String addedToPriceTagQueueNotice(int count) => _pick(
+        'Added to price tag print list: $count',
+        'Добавлено на печать ценников: $count',
+        'Баға белгісін басу тізіміне қосылды: $count',
+      );
+  String get belowCostPriceWarning => _pick(
+        'Price is below cost!',
+        'Цена ниже закупочной!',
+        'Баға өзіндік құнынан төмен!',
+      );
+  String belowCostSaleWarning(String loss) => _pick(
+        'Sale is below cost (loss: $loss).',
+        'Продажа в минус (убыток: $loss).',
+        'Шығынмен сату (шығын: $loss).',
+      );
+  String get belowCostPinRequiredNote => _pick(
+        'Owner PIN is required in seller mode to complete this sale.',
+        'В режиме продавца нужен PIN владельца для проведения такого чека.',
+        'Сатушы режимінде мұндай чекті өткізу үшін иесінің PIN-коды қажет.',
+      );
+  String get belowCostPinDialogTitle => _pick(
+        'Confirm sale below cost',
+        'Продажа ниже закупки',
+        'Өзіндік құнынан төмен сату',
+      );
+  String get confirmBelowCostAction => _pick(
+        'Complete sale',
+        'Провести чек',
+        'Чекті өткізу',
+      );
+  String get undoAction => _pick(
+        'Undo',
+        'Отменить',
+        'Болдырмау',
+      );
+  String get cartClearedMsg => _pick(
+        'Cart cleared',
+        'Корзина очищена',
+        'Себет тазартылды',
+      );
+  String showMoreCountBtn(int remaining) => _pick(
+        'Show more ($remaining left)',
+        'Показать ещё (осталось $remaining)',
+        'Тағы көрсету ($remaining қалды)',
+      );
+  String get hideSummaryHeaderTooltip => _pick(
+        'Hide summary cards',
+        'Скрыть сводку и советы',
+        'Жиынтықты жасыру',
+      );
+  String get showSummaryHeaderTooltip => _pick(
+        'Show summary cards',
+        'Показать сводку и советы',
+        'Жиынтықты көрсету',
+      );
+  String get purchaseOrderBtn => _pick(
+        'To purchase',
+        'К закупке',
+        'Сатып алуға',
+      );
+  String get purchaseOrderTitle => _pick(
+        'Supplier Purchase Order',
+        'Заявка поставщику',
+        'Жеткізушіге тапсырыс',
+      );
+  String get purchaseOrderEmpty => _pick(
+        'All products are well stocked',
+        'Все товары в достатке',
+        'Барлық тауар жеткілікті',
+      );
+  String get supplierOptionalHint => _pick(
+        'Supplier (optional)',
+        'Поставщик (необязательно)',
+        'Жеткізуші (міндетті емес)',
+      );
+  String get allSuppliersFilter => _pick(
+        'All suppliers',
+        'Все поставщики',
+        'Барлық жеткізушілер',
+      );
+  String get supplierPhoneOptionalHint => _pick(
+        'Supplier WhatsApp phone (optional)',
+        'Телефон поставщика в WhatsApp (необяз.)',
+        'Жеткізушінің WhatsApp нөмірі (міндетті емес)',
+      );
+  String get productPhotoLabel => _pick(
+        'Product photo',
+        'Фото товара',
+        'Тауар фотосы',
+      );
+  String get cameraBtn => _pick(
+        'Camera',
+        'Камера',
+        'Камера',
+      );
+  String get galleryBtn => _pick(
+        'Gallery',
+        'Галерея',
+        'Галерея',
+      );
+  String get removePhotoBtn => _pick(
+        'Remove photo',
+        'Удалить фото',
+        'Фотоны өшіру',
+      );
+  String get photoPickFailedMsg => _pick(
+        'Could not load photo',
+        'Не удалось загрузить фото',
+        'Фотоны жүктеу мүмкін болмады',
+      );
+  String get syncAndBackupTitle => _pick(
+        'Sync & Backup',
+        'Синхронизация и бэкап',
+        'Синхрондау және бэкап',
+      );
+  String get autoSyncGoogleSheetsSection => _pick(
+        'Auto-sync (Google Sheets)',
+        'Автосинхронизация (Google Таблица)',
+        'Автосинхрондау (Google Кесте)',
+      );
+  String get manualBackupExportSection => _pick(
+        'Manual backup / export',
+        'Ручной бэкап / экспорт',
+        'Қолмен бэкап / экспорт',
+      );
+  String get manualBackupExportSubtitle => _pick(
+        'Copy for A1, CSV, JSON backup & import',
+        'Копирование для A1, CSV, JSON и импорт',
+        'A1 көшіру, CSV, JSON және импорт',
+      );
+  String get catalogMaintenanceTitle => _pick(
+        'Catalog maintenance',
+        'Обслуживание каталога',
+        'Каталогқа қызмет көрсету',
+      );
+  String get catalogMaintenanceSubtitle => _pick(
+        'Duplicates & bulk archive / trash',
+        'Дубликаты и массовый перенос в архив/корзину',
+        'Көшірмелер және жаппай мұрағат/себетке көшіру',
+      );
+  String get dangerBulkActionsTitle => _pick(
+        'Bulk actions (use with caution)',
+        'Массовые действия (осторожно)',
+        'Жаппай әрекеттер (абайлаңыз)',
+      );
+  String get reportsBtn => _pick(
+        'Reports',
+        'Отчёты',
+        'Есептер',
+      );
+  String get printInvoicePriceTagsBtn => _pick(
+        'Print price tags',
+        'Ценники',
+        'Баға белгілері',
+      );
+  String get printAllPriceTagsBtn => _pick(
+        'Print all (PDF)',
+        'Распечатать все (PDF)',
+        'Барлығын басу (PDF)',
+      );
+  String get batchPriceTagsTitle => _pick(
+        'Print price tags',
+        'Печать ценников',
+        'Баға белгілерін басу',
+      );
+  String get cashDepositBtn => _pick(
+        '+ Deposit',
+        '+ Внести',
+        '+ Салу',
+      );
+  String get cashWithdrawalBtn => _pick(
+        '− Withdraw',
+        '− Выемка',
+        '− Алу',
+      );
+  String get cashDepositTitle => _pick(
+        'Cash deposit (float)',
+        'Внесение наличных (размен)',
+        'Қолма-қол ақша салу (ұсақ ақша)',
+      );
+  String get cashWithdrawalTitle => _pick(
+        'Cash withdrawal (collection)',
+        'Выемка наличных (инкассация)',
+        'Қолма-қол ақша алу (инкассация)',
+      );
+  String get cashDepositsLabel => _pick(
+        'Deposits (float)',
+        'Внесения (размен)',
+        'Салымдар (ұсақ ақша)',
+      );
+  String get cashWithdrawalsLabel => _pick(
+        'Withdrawals (collection)',
+        'Выемки (инкассация)',
+        'Алу (инкассация)',
+      );
+  String get cashMovementNoteHint => _pick(
+        'Note (e.g. change float, owner collection)',
+        'Комментарий (например: размен, инкассация)',
+        'Түсініктеме (мысалы: ұсақ ақша, инкассация)',
+      );
+  String get shiftCashFormulaHintFull => _pick(
+        'Start + cash sales + deposits − withdrawals − expenses',
+        'Начало + нал. продажи + внесения − выемки − расходы',
+        'Басы + қолма-қол сатылым + салым − алу − шығындар',
+      );
+  String get suppliersDirectoryBtn => _pick(
+        'Suppliers',
+        'Поставщики',
+        'Жеткізушілер',
+      );
+  String get suppliersDirectoryTitle => _pick(
+        'Suppliers Directory',
+        'Справочник поставщиков',
+        'Жеткізушілер анықтамалығы',
+      );
+  String get suppliersTabLabel => _pick(
+        'Suppliers',
+        'Поставщики',
+        'Жеткізушілер',
+      );
+  String get cheapestSupplierTabLabel => _pick(
+        'Best prices',
+        'Где дешевле',
+        'Қайда арзан',
+      );
+  String get suppliersEmptyMsg => _pick(
+        'No suppliers yet. Specify supplier name when recording stock-in.',
+        'Пока нет поставщиков. Указывайте поставщика при оформлении прихода.',
+        'Әзірге жеткізушілер жоқ. Кіріс кезінде жеткізушіні көрсетіңіз.',
+      );
+  String get cheapestSupplierEmptyMsg => _pick(
+        'No purchase history for price comparison yet.',
+        'Пока нет закупок для сравнения цен между поставщиками.',
+        'Бағаларды салыстыру үшін әзірге сатып алу тарихы жоқ.',
+      );
+  String get searchSuppliersHint => _pick(
+        'Search supplier or product...',
+        'Поиск по поставщику или товару...',
+        'Жеткізуші немесе тауар бойынша іздеу...',
+      );
+  String supplierStatsSummary(int invoices, int products) => _pick(
+        '$invoices invoices • $products items',
+        'Накладных: $invoices • Позиций: $products',
+        'Жүкқұжат: $invoices • Тауар: $products',
+      );
+  String get cheapestLastTimeLabel => _pick(
+        'Cheapest last time',
+        'Дешевле в последний раз',
+        'Соңғы рет ең арзан',
+      );
+  String get moreOptionsBtn => _pick(
+        'More options',
+        'Ещё параметры',
+        'Қосымша параметрлер',
+      );
+  String get quickPosItemsTitle => _pick(
+        'Quick items',
+        'Быстрые товары',
+        'Жылдам тауарлар',
+      );
+  String get multiScanLabel => _pick(
+        'Multi-scan',
+        'Мультискан',
+        'Мультискан',
+      );
+  String inReceiptCountLabel(num count) => _pick(
+        'In receipt: ${_q(count)}',
+        'В чеке: ${_q(count)}',
+        'Чекте: ${_q(count)}',
+      );
+  String get exactCashBtn => _pick(
+        'Exact',
+        'Без сдачи',
+        'Қайтарымсыз',
+      );
+  String get repeatOrderBtn => _pick(
+        'Repeat order',
+        'Повторить заказ',
+        'Тапсырысты қайталау',
+      );
+  String orderRepeatedToCartMsg(int count) => _pick(
+        'Added $count items to cart',
+        'В корзину добавлено позиций: $count',
+        'Себетке қосылған тауар: $count',
+      );
+  String orderRepeatedPartialMsg(int added, int skipped) => _pick(
+        'Added $added items (unavailable: $skipped)',
+        'Добавлено: $added • Нет в наличии: $skipped',
+        'Қосылды: $added • Қоймада жоқ: $skipped',
+      );
+  String get noAvailableItemsToRepeatMsg => _pick(
+        'None of the items from this receipt are in stock',
+        'Товары из этого чека отсутствуют на складе',
+        'Бұл чектегі тауарлар қоймада жоқ',
+      );
+  String get newCustomerBtn => _pick(
+        'New customer',
+        'Новый клиент',
+        'Жаңа сатып алушы',
+      );
+  String get customPosItemBtn => _pick(
+        '+ Custom item',
+        '+ Своя позиция',
+        '+ Еркін тауар',
+      );
+  String get customPosItemTitle => _pick(
+        'Custom item (no card)',
+        'Свободная позиция',
+        'Еркін тауар',
+      );
+  String get customPosItemDefaultName => _pick(
+        'Custom item',
+        'Свободная позиция',
+        'Еркін тауар',
+      );
+  String get customPosItemNameHint => _pick(
+        'Name (optional)',
+        'Название (необязательно)',
+        'Атауы (міндетті емес)',
+      );
+  String get addToReceiptAction => _pick(
+        'Add to receipt',
+        'Добавить в чек',
+        'Чекке қосу',
+      );
+  String get voiceSearchTooltip => _pick(
+        'Voice search',
+        'Голосовой поиск',
+        'Дауыспен іздеу',
+      );
+  String get voiceListeningHint => _pick(
+        'Listening...',
+        'Слушаю...',
+        'Тыңдап тұрмын...',
+      );
+  String get voiceSearchUnavailableMsg => _pick(
+        'Voice search is unavailable on this device',
+        'Голосовой поиск недоступен на этом устройстве',
+        'Бұл құрылғыда дауыспен іздеу қолжетімсіз',
+      );
+  String get thermalPrintBtn => _pick(
+        'Print (Bluetooth)',
+        'Печать на принтер',
+        'Принтерге басу',
+      );
+  String get thermalPrinterTitle => _pick(
+        'Bluetooth Printer (58 / 80 mm)',
+        'Термопринтер (58 / 80 мм)',
+        'Термопринтер (58 / 80 мм)',
+      );
+  String get selectPrinterTitle => _pick(
+        'Select Bluetooth Printer',
+        'Выберите Bluetooth-принтер',
+        'Bluetooth-принтерді таңдаңыз',
+      );
+  String get noPairedPrintersMsg => _pick(
+        'No paired Bluetooth printers found. Pair your printer in phone Settings first.',
+        'Сопряжённые Bluetooth-принтеры не найдены. Сначала подключите принтер в настройках телефона.',
+        'Жұпталған Bluetooth-принтерлер табылмады. Алдымен телефон баптауларынан қосыңыз.',
+      );
+  String get paperWidthLabel => _pick(
+        'Paper width',
+        'Ширина ленты',
+        'Таспа ені',
+      );
+  String get printSuccessMsg => _pick(
+        'Sent to printer',
+        'Отправлено на печать',
+        'Басып шығаруға жіберілді',
+      );
+  String get printFailedMsg => _pick(
+        'Could not print. Check printer power & Bluetooth.',
+        'Не удалось напечатать. Проверьте питание принтера и Bluetooth.',
+        'Басып шығару мүмкін болмады. Принтер мен Bluetooth-ды тексеріңіз.',
+      );
+  String get testPrintBtn => _pick(
+        'Test print',
+        'Пробная печать',
+        'Сынақ басып шығару',
+      );
+  String get checkoutMoreOptionsTitle => _pick(
+        'More (discount, debt, customer)',
+        'Ещё (скидка, долг, клиент)',
+        'Тағы (жеңілдік, қарыз, сатып алушы)',
+      );
+  String get frequentlyBoughtWithLabel => _pick(
+        'Often bought with:',
+        'С этим часто берут:',
+        'Мұнымен жиі алады:',
+      );
+  String get sendPriceListBtn => _pick(
+        'Send price list',
+        'Отправить прайс',
+        'Прайс жіберу',
+      );
+  String get priceListTitle => _pick(
+        'Price List for WhatsApp',
+        'Прайс-лист для WhatsApp',
+        'WhatsApp-қа арналған прайс',
+      );
+  String get newArrivalsOnlyLabel => _pick(
+        'New arrivals (14d)',
+        'Новинки (14 дн.)',
+        'Жаңа тауарлар (14 күн)',
+      );
+  String get includeWholesalePricesLabel => _pick(
+        'Wholesale prices',
+        'Оптовые цены',
+        'Көтерме бағалар',
+      );
+  String get includeStockCountLabel => _pick(
+        'Stock count',
+        'Остатки',
+        'Қалдық саны',
+      );
+  String get priceListEmptyMsg => _pick(
+        'No products match the selected filters.',
+        'Нет товаров по выбранным фильтрам.',
+        'Таңдалған сүзгілер бойынша тауар жоқ.',
+      );
+  String priceListCountLabel(int count) => _pick(
+        '$count item(s) in price list',
+        'Позиций в прайсе: $count',
+        'Прайстағы тауар: $count',
+      );
+  String approxDaysLeftShort(int days) => _pick(
+        '~${days}d left',
+        '~на $days дн.',
+        '~$days күнге',
+      );
+  String get frozenCashBtn => _pick(
+        'Frozen Cash (Dead Stock)',
+        'Замороженные деньги (неликвид)',
+        'Тоқтап тұрған ақша (өтпейтін)',
+      );
+  String get frozenCashTitle => _pick(
+        'Frozen Cash Recovery',
+        'Возврат замороженных денег',
+        'Тоқтап тұрған ақшаны қайтару',
+      );
+  String get frozenCashSubtitle => _pick(
+        'Top in-stock items with the most tied-up money and no sales for 30–60+ days.',
+        'Товары, в которых лежит больше всего денег и не было продаж 30–60+ дней.',
+        'Ең көп ақша салынған және 30–60+ күн сатылмаған тауарлар.',
+      );
+  String frozenCashTotalLabel(String amount, int count) => _pick(
+        'Frozen: $amount ($count items)',
+        'Заморожено: $amount ($count поз.)',
+        'Тоқтап тұр: $amount ($count тауар)',
+      );
+  String get frozenCashFilter30Plus =>
+      _pick('30+ days', '30+ дней', '30+ күн');
+  String get frozenCashFilter30To60 =>
+      _pick('30–60 days', '30–60 дней', '30–60 күн');
+  String get frozenCashFilter60Plus =>
+      _pick('60+ days', '60+ дней', '60+ күн');
+  String frozenCashDaysIdle(int days, bool hasEverSold) => hasEverSold
+      ? _pick(
+          'No sales for $days d',
+          'Без продаж $days дн.',
+          '$days күн сатылмады',
+        )
+      : _pick(
+          'No sales ($days d on shelf)',
+          'Без продаж ($days дн. на складе)',
+          'Сатылым жоқ ($days күн қоймада)',
+        );
+  String get frozenCashHintBadge => _pick(
+        'Run promo / bundle',
+        'Сделать акцию / комплект',
+        'Акция / жинақ жасау',
+      );
+  String get frozenCashActionBtn => _pick(
+        'Set Promo',
+        'Сделать акцию',
+        'Акция жасау',
+      );
+  String get frozenCashEmptyMsg => _pick(
+        'No slow-moving stock in this period.',
+        'Залежавшихся товаров за этот период нет.',
+        'Бұл кезеңде өтпей тұрған тауарлар жоқ.',
+      );
+  String newMarginLabel(String pct) => _pick(
+        'New margin: $pct%',
+        'Новая маржа: $pct%',
+        'Жаңа маржа: $pct%',
+      );
+  String raiseSellPriceAction(int percent, String price) => _pick(
+        'Raise sell price (+$percent%) → $price',
+        'Поднять цену продажи (+$percent%) → $price',
+        'Сату бағасын көтеру (+$percent%) → $price',
+      );
+  String get noWholesaleDiscountBtn => _pick(
+        'No discount (retail)',
+        'Без скидки (розница)',
+        'Жеңілдіксіз (бөлшек)',
+      );
+  String get restoreWholesaleBtn => _pick(
+        'Apply wholesale',
+        'Вернуть опт',
+        'Көтерме бағаны қайтару',
+      );
+  String get allowCashierDiscountsLabel => _pick(
+        'Allow Cashier Discounts',
+        'Разрешать скидки продавцу',
+        'Сатушыға жеңілдік беруге рұқсат',
+      );
+  String get allowCashierDiscountsHint => _pick(
+        'When off, cashiers cannot apply receipt discounts',
+        'Если выключено, в режиме продавца нельзя делать скидку',
+        'Өшірулі болса, сатушы режимінде жеңілдік жасалмайды',
+      );
+  String get discountsDisabledNote => _pick(
+        'Discounts are disabled by the owner',
+        'Скидки отключены владельцем',
+        'Жеңілдіктерді иесі өшірген',
+      );
+  String get supplierDebtModeLabel => _pick(
+        'On credit (debt)',
+        'В долг поставщику',
+        'Жеткізушіге қарызға',
+      );
+  String supplierDebtBadge(String amount) => _pick(
+        'We owe: $amount',
+        'Наш долг: $amount',
+        'Біздің қарыз: $amount',
+      );
+  String supplierDebtTotalLabel(String amount) => _pick(
+        'Owed to suppliers: $amount',
+        'Долг поставщикам: $amount',
+        'Жеткізушілерге қарыз: $amount',
+      );
+  String supplierDebtOnlyFilter(int count) => _pick(
+        'With Debt ($count)',
+        'С долгом ($count)',
+        'Қарызы бар ($count)',
+      );
+  String supplierDebtRepaymentTitle(String supplier) => supplier.trim().isEmpty
+      ? _pick(
+          'Supplier debt payment',
+          'Оплата долга поставщику',
+          'Жеткізушіге қарыз төлеу',
+        )
+      : _pick(
+          'Supplier debt: ${supplier.trim()}',
+          'Долг поставщику: ${supplier.trim()}',
+          'Жеткізушіге қарыз: ${supplier.trim()}',
+        );
+  String get paySupplierDebtTitle => _pick(
+        'Pay Supplier Debt',
+        'Оплата поставщику',
+        'Жеткізушіге төлем',
+      );
+  String get unspecifiedSupplierLabel => _pick(
+        'Unspecified supplier',
+        'Без поставщика',
+        'Жеткізуші көрсетілмеген',
       );
 }

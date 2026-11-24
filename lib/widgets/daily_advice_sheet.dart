@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -234,7 +233,7 @@ class _DailyAdviceBannerState extends State<DailyAdviceBanner> {
                           alignment: Alignment.centerLeft,
                           children: <Widget>[
                             ...previousChildren,
-                            if (currentChild != null) currentChild,
+                            ?currentChild,
                           ],
                         ),
                         child: Text(
@@ -508,6 +507,8 @@ class _DailyAdviceSheetState extends State<DailyAdviceSheet> {
                                 strings.adviceGenerateBarcodeBtn,
                               AdviceActionType.openProduct =>
                                 strings.adviceOpenProductBtn,
+                              AdviceActionType.messageCustomer =>
+                                strings.adviceWriteWhatsAppBtn,
                               AdviceActionType.none => null,
                             };
 
@@ -597,8 +598,11 @@ class _DailyAdviceSheetState extends State<DailyAdviceSheet> {
                                         item.body,
                                         style: theme.textTheme.bodySmall,
                                       ),
-                                      if (item.product != null &&
-                                          actionBtnLabel != null) ...[
+                                      if (actionBtnLabel != null &&
+                                          (item.product != null ||
+                                              item.actionType ==
+                                                  AdviceActionType
+                                                      .messageCustomer)) ...[
                                         const SizedBox(height: 8),
                                         Align(
                                           alignment: Alignment.centerRight,
@@ -608,7 +612,21 @@ class _DailyAdviceSheetState extends State<DailyAdviceSheet> {
                                                   VisualDensity.compact,
                                             ),
                                             onPressed: () async {
-                                              final prod = item.product!;
+                                              if (item.actionType ==
+                                                  AdviceActionType
+                                                      .messageCustomer) {
+                                                final msg =
+                                                    item.whatsappMessage ??
+                                                        item.body;
+                                                await Share.share(
+                                                  msg,
+                                                  subject: item.customerName ??
+                                                      strings.dailyAdviceBadge,
+                                                );
+                                                return;
+                                              }
+                                              final prod = item.product;
+                                              if (prod == null) return;
                                               if (item.actionType ==
                                                   AdviceActionType
                                                       .addToStockIn) {
@@ -629,6 +647,8 @@ class _DailyAdviceSheetState extends State<DailyAdviceSheet> {
                                                   widget.onOpenProduct(prod);
                                                 case AdviceActionType
                                                       .addToStockIn:
+                                                case AdviceActionType
+                                                      .messageCustomer:
                                                 case AdviceActionType.none:
                                                   break;
                                               }

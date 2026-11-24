@@ -1,3 +1,5 @@
+import 'package:flutter/widgets.dart';
+
 import '../l10n/app_strings.dart';
 
 String formatMoney(double amount, [AppCurrency currency = AppCurrency.kzt]) {
@@ -44,4 +46,28 @@ String formatDateTime(DateTime dt) {
   final hour = dt.hour.toString().padLeft(2, '0');
   final minute = dt.minute.toString().padLeft(2, '0');
   return '${formatDate(dt)} $hour:$minute';
+}
+
+String formatQty(num value) {
+  if ((value - value.roundToDouble()).abs() < 0.0005) {
+    return value.round().toString();
+  }
+  var s = value.toStringAsFixed(3);
+  while (s.contains('.') && (s.endsWith('0') || s.endsWith('.'))) {
+    s = s.substring(0, s.length - 1);
+  }
+  return s;
+}
+
+double? parseQty(String raw) {
+  final clean = raw.trim().replaceAll(' ', '').replaceAll(',', '.');
+  if (clean.isEmpty) return null;
+  return double.tryParse(clean);
+}
+
+void selectAllText(TextEditingController controller) {
+  controller.selection = TextSelection(
+    baseOffset: 0,
+    extentOffset: controller.text.length,
+  );
 }

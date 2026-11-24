@@ -12,6 +12,7 @@ import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/stock_in.dart';
 import '../widgets/formatters.dart';
+import 'input_normalizer.dart';
 import 'inventory_storage.dart';
 
 class ExportService {
@@ -30,7 +31,7 @@ class ExportService {
   static String buildProductsCsv(List<Product> products) {
     final buffer = StringBuffer();
     buffer.writeln(
-      'ID,Name,Category,Nomenclature,PrintName,PackQty,BoxQty,SKU,PackBarcode,BoxBarcode,UnitWeight,Unit,CostPrice,SellPrice,WholesalePrice,Stock,LowStockThreshold,UpdatedAt',
+      'ID,Name,Category,Nomenclature,PrintName,PackQty,BoxQty,SKU,PackBarcode,BoxBarcode,UnitWeight,Unit,CostPrice,SellPrice,WholesalePrice,WholesaleMinQty,Stock,LowStockThreshold,UpdatedAt',
     );
     for (final p in products) {
       buffer.writeln(
@@ -50,6 +51,7 @@ class ExportService {
           p.costPrice.toStringAsFixed(2),
           p.sellPrice.toStringAsFixed(2),
           p.wholesalePrice > 0 ? p.wholesalePrice.toStringAsFixed(2) : '',
+          p.wholesaleMinQty > 0 ? '${p.wholesaleMinQty}' : '',
           '${p.stock}',
           '${p.lowStockThreshold}',
           p.updatedAt.toIso8601String(),
@@ -236,6 +238,7 @@ class ExportService {
       if (k == 'sku' || k.contains('штрихкод (sku)') || k == 'штрихкод' || k == 'артикул') return 'sku';
       if (k == 'costprice' || k == 'cost' || k.contains('закуп') || k.contains('себест') || k.contains('сатып')) return 'costPrice';
       if (k == 'wholesaleprice' || k == 'wholesale' || k == 'опт' || k.contains('оптов') || k.contains('көтерме')) return 'wholesalePrice';
+      if (k == 'wholesaleminqty' || k.contains('опт от') || k.contains('көтерме (дана')) return 'wholesaleMinQty';
       if (k == 'sellprice' || k == 'price' || k == 'цена' || k.contains('цена прод') || k.contains('сату')) return 'sellPrice';
       if (k == 'stock' || k.contains('остаток') || k.contains('колич') || k.contains('қалдық')) return 'stock';
       if (k == 'lowstockthreshold' || k.contains('порог') || k.contains('шек')) return 'lowStockThreshold';
@@ -273,24 +276,28 @@ class ExportService {
           map[cols[c]] = cells[c];
         }
       }
-      final name = (map['name'] ?? '').trim();
+      final name = InputNormalizer.normalizeDisplayName(map['name'] ?? '');
       if (name.isEmpty) continue;
-      final cat = (map['category'] ?? '').trim();
+      final cat = InputNormalizer.normalizeDisplayName(map['category'] ?? '');
       products.add(
         Product(
           id: (map['id'] ?? '').trim(),
           name: name,
           category: cat.isEmpty ? 'General' : cat,
-          sku: (map['sku'] ?? '').trim(),
-          packQty: (map['packQty'] ?? '').trim(),
-          boxQty: (map['boxQty'] ?? '').trim(),
-          packBarcode: (map['packBarcode'] ?? '').trim(),
-          boxBarcode: (map['boxBarcode'] ?? '').trim(),
+          sku: InputNormalizer.normalizeBarcode(map['sku'] ?? ''),
+          packQty: InputNormalizer.normalizeDisplayName(map['packQty'] ?? ''),
+          boxQty: InputNormalizer.normalizeDisplayName(map['boxQty'] ?? ''),
+          packBarcode:
+              InputNormalizer.normalizeBarcode(map['packBarcode'] ?? ''),
+          boxBarcode:
+              InputNormalizer.normalizeBarcode(map['boxBarcode'] ?? ''),
           costPrice: parseNum(map['costPrice']).clamp(0.0, double.infinity),
           sellPrice: parseNum(map['sellPrice']).clamp(0.0, double.infinity),
           wholesalePrice:
               parseNum(map['wholesalePrice']).clamp(0.0, double.infinity),
-          stock: parseIntVal(map['stock']).clamp(0, 9999999),
+          wholesaleMinQty:
+              parseIntVal(map['wholesaleMinQty']).clamp(0, 999999),
+          stock: parseNum(map['stock']).clamp(0.0, 9999999.0),
           lowStockThreshold: parseIntVal(map['lowStockThreshold'], fallback: 5).clamp(0, 999999),
           updatedAt: now,
         ),
@@ -457,6 +464,78 @@ class ExportService {
         '---',
         receiptFooter.trim(),
       ],
+    ];
+    return lines.join('\n');
+  }
+
+  static String buildCartEstimateText(
+    List<
+            ({
+              String name,
+              double quantity,
+              double unitPrice,
+              double lineTotal,
+              bool isWholesale,
+            })>
+        items,
+    AppStrings strings,
+    AppCurrency currency, {
+    String shopName = 'Lumio',
+    String shopAddress = '',
+    String shopPhone = '',
+    DateTime? createdAt,
+  }) {
+    final dt = createdAt ?? DateTime.now();
+    final total = items.fold<double>(0, (sum, i) => sum + i.lineTotal);
+    final totalUnits = items.fold<double>(0, (sum, i) => sum + i.quantity);
+    final lines = <String>[
+      if (shopName.trim().isNotEmpty) '*${shopName.trim()}*',
+      if (shopAddress.trim().isNotEmpty) shopAddress.trim(),
+      if (shopPhone.trim().isNotEmpty) shopPhone.trim(),
+      strings.estimateTitle,
+      formatDateTime(dt),
+      '---',
+      for (var i = 0; i < items.length; i++)
+        '${i + 1}. ${items[i].name}: ${formatQty(items[i].quantity)} × ${formatMoney(items[i].unitPrice, currency)} = ${formatMoney(items[i].lineTotal, currency)}',
+      '---',
+      strings.estimateItemsUnitsSummary(items.length, totalUnits),
+      '*${strings.estimateTotalLabel}: ${formatMoney(total, currency)}*',
+      strings.estimateDisclaimer,
+    ];
+    return lines.join('\n');
+  }
+
+  static String buildPurchaseOrderText(
+    List<({Product product, double quantity})> items,
+    AppStrings strings, {
+    String supplierName = '',
+    String shopName = 'Lumio',
+    String shopAddress = '',
+    String shopPhone = '',
+    DateTime? createdAt,
+  }) {
+    final dt = createdAt ?? DateTime.now();
+    final totalUnits = items.fold<double>(0, (sum, i) => sum + i.quantity);
+    final lines = <String>[
+      if (shopName.trim().isNotEmpty) '*${shopName.trim()}*',
+      if (shopAddress.trim().isNotEmpty) shopAddress.trim(),
+      if (shopPhone.trim().isNotEmpty) shopPhone.trim(),
+      supplierName.trim().isNotEmpty
+          ? '${strings.purchaseOrderTitle}: ${supplierName.trim()}'
+          : strings.purchaseOrderTitle,
+      formatDateTime(dt),
+      '---',
+      for (var i = 0; i < items.length; i++)
+        () {
+          final p = items[i].product;
+          final qty = formatQty(items[i].quantity);
+          final unit = p.unit.trim().isNotEmpty ? p.unit.trim() : '';
+          final qtyStr = unit.isNotEmpty ? '$qty $unit' : qty;
+          final skuSuffix = p.sku.trim().isNotEmpty ? ' (${p.sku.trim()})' : '';
+          return '${i + 1}. ${p.name}$skuSuffix — $qtyStr';
+        }(),
+      '---',
+      strings.estimateItemsUnitsSummary(items.length, totalUnits),
     ];
     return lines.join('\n');
   }
@@ -1017,6 +1096,174 @@ class ExportService {
     return doc.save();
   }
 
+  static Future<Uint8List> buildBatchPriceTagsPdfBytes({
+    required List<Product> products,
+    required AppCurrency currency,
+    bool isThermal58x40 = false,
+    bool showPrice = true,
+    String shopName = '',
+  }) async {
+    final unicodeFont = await _loadSystemUnicodeFont();
+    final theme = unicodeFont != null
+        ? pw.ThemeData.withFont(base: unicodeFont, bold: unicodeFont)
+        : pw.ThemeData.base();
+
+    String resolveCode(Product p) {
+      if (p.sku.trim().isNotEmpty) return p.sku.trim();
+      if (p.packBarcode.trim().isNotEmpty) return p.packBarcode.trim();
+      if (p.boxBarcode.trim().isNotEmpty) return p.boxBarcode.trim();
+      return '';
+    }
+
+    pw.Widget buildTag(
+      Product product, {
+      required double barcodeWidth,
+      required double barcodeHeight,
+      required double titleFontSize,
+      required double priceFontSize,
+      required double shopFontSize,
+      bool withBorder = false,
+    }) {
+      final displayName = product.printName.trim().isNotEmpty
+          ? product.printName.trim()
+          : product.name.trim();
+      final priceText = formatMoney(product.sellPrice, currency);
+      final code = resolveCode(product);
+      final barcodeType =
+          _isValidEan13(code) ? pw.Barcode.ean13() : pw.Barcode.code128();
+
+      return pw.Container(
+        padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+        decoration: withBorder
+            ? pw.BoxDecoration(
+                border: pw.Border.all(color: PdfColors.grey400, width: 0.5),
+              )
+            : null,
+        child: pw.Column(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            if (shopName.trim().isNotEmpty)
+              pw.Text(
+                shopName.trim(),
+                maxLines: 1,
+                style: pw.TextStyle(
+                  fontSize: shopFontSize,
+                  color: PdfColors.grey700,
+                ),
+                textAlign: pw.TextAlign.center,
+              ),
+            pw.Text(
+              displayName,
+              maxLines: 2,
+              style: pw.TextStyle(
+                fontSize: titleFontSize,
+                fontWeight: pw.FontWeight.bold,
+              ),
+              textAlign: pw.TextAlign.center,
+            ),
+            if (showPrice)
+              pw.Text(
+                priceText,
+                style: pw.TextStyle(
+                  fontSize: priceFontSize,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+                textAlign: pw.TextAlign.center,
+              ),
+            if (code.isNotEmpty)
+              pw.BarcodeWidget(
+                barcode: barcodeType,
+                data: code,
+                width: barcodeWidth,
+                height: barcodeHeight,
+                drawText: true,
+                textStyle: const pw.TextStyle(fontSize: 7.5),
+              )
+            else
+              pw.SizedBox(height: barcodeHeight * 0.4),
+          ],
+        ),
+      );
+    }
+
+    final doc = pw.Document(theme: theme);
+    if (products.isEmpty) return doc.save();
+
+    if (isThermal58x40) {
+      const pageFormat = PdfPageFormat(
+        58 * PdfPageFormat.mm,
+        40 * PdfPageFormat.mm,
+        marginAll: 2.5 * PdfPageFormat.mm,
+      );
+      for (final product in products) {
+        doc.addPage(
+          pw.Page(
+            pageFormat: pageFormat,
+            build: (_) => buildTag(
+              product,
+              barcodeWidth: 46 * PdfPageFormat.mm,
+              barcodeHeight: 15 * PdfPageFormat.mm,
+              titleFontSize: 8.5,
+              priceFontSize: 12,
+              shopFontSize: 6.5,
+            ),
+          ),
+        );
+      }
+    } else {
+      const cols = 3;
+      const rowsPerPage = 8;
+      const perPage = cols * rowsPerPage;
+      final totalPages = (products.length + perPage - 1) ~/ perPage;
+      for (var page = 0; page < totalPages; page++) {
+        final start = page * perPage;
+        final end = (start + perPage) > products.length
+            ? products.length
+            : (start + perPage);
+        final pageItems = products.sublist(start, end);
+        doc.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            margin: const pw.EdgeInsets.all(10 * PdfPageFormat.mm),
+            build: (_) {
+              final rowWidgets = <pw.Widget>[];
+              for (var r = 0; r < rowsPerPage; r++) {
+                final cells = <pw.Widget>[];
+                for (var c = 0; c < cols; c++) {
+                  final idx = r * cols + c;
+                  cells.add(
+                    pw.Expanded(
+                      child: idx < pageItems.length
+                          ? pw.Container(
+                              height: 33 * PdfPageFormat.mm,
+                              margin: const pw.EdgeInsets.all(1.5),
+                              child: buildTag(
+                                pageItems[idx],
+                                barcodeWidth: 50 * PdfPageFormat.mm,
+                                barcodeHeight: 13 * PdfPageFormat.mm,
+                                titleFontSize: 8,
+                                priceFontSize: 10.5,
+                                shopFontSize: 6,
+                                withBorder: true,
+                              ),
+                            )
+                          : pw.SizedBox(height: 33 * PdfPageFormat.mm),
+                    ),
+                  );
+                }
+                rowWidgets.add(pw.Row(children: cells));
+              }
+              return pw.Column(children: rowWidgets);
+            },
+          ),
+        );
+      }
+    }
+
+    return doc.save();
+  }
+
   static Future<String> saveExportFile(String filename, String content) async {
     final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
     final baseDir = home != null && home.isNotEmpty
@@ -1026,7 +1273,213 @@ class ExportService {
       await baseDir.create(recursive: true);
     }
     final file = File('${baseDir.path}/$filename');
-    await file.writeAsString(content);
+    await writeTextFileAtomically(
+      file,
+      content,
+      validateJson: filename.toLowerCase().endsWith('.json'),
+    );
     return file.path;
+  }
+
+  static String buildYearArchiveJson({
+    required int year,
+    required List<Sale> sales,
+    required List<StockInRecord> stockIns,
+    required AppCurrency currency,
+  }) {
+    return const JsonEncoder.withIndent('  ').convert({
+      'version': 1,
+      'archiveType': 'year_end',
+      'year': year,
+      'currencyCode': currency.code,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'salesCount': sales.length,
+      'stockInsCount': stockIns.length,
+      'sales': sales.map((s) => s.toJson()).toList(),
+      'stockIns': stockIns.map((r) => r.toJson()).toList(),
+    });
+  }
+
+  static String buildYearArchiveCsvWithBom({
+    required int year,
+    required List<Sale> sales,
+    required List<StockInRecord> stockIns,
+  }) {
+    final buffer = StringBuffer('\uFEFF');
+    buffer.writeln('=== SALES $year ===');
+    buffer.writeln(
+      'ID;Date;Receipt;Customer;PaymentMethod;Items;Subtotal;Discount;Total;Cost;Paid;Debt;Profit',
+    );
+    for (final s in sales) {
+      final itemsSummary = s.items
+          .map(
+            (i) =>
+                '${i.productName} x${i.quantity} (${i.unitPrice.toStringAsFixed(0)})',
+          )
+          .join(', ');
+      buffer.writeln(
+        [
+          _csvEscape(s.id),
+          s.createdAt.toIso8601String(),
+          _csvEscape(s.receiptCode),
+          _csvEscape(s.customerName),
+          _csvEscape(s.paymentMethod.name),
+          _csvEscape(itemsSummary),
+          s.subtotal.toStringAsFixed(2),
+          s.discount.toStringAsFixed(2),
+          s.total.toStringAsFixed(2),
+          s.totalCost.toStringAsFixed(2),
+          s.paidAmount.toStringAsFixed(2),
+          s.remainingDebt.toStringAsFixed(2),
+          s.profit.toStringAsFixed(2),
+        ].join(';'),
+      );
+    }
+    buffer.writeln();
+    buffer.writeln('=== STOCK-IN INVOICES $year ===');
+    buffer.writeln('ID;Date;Supplier;Currency;Rate;Units;TotalCost;Items');
+    for (final r in stockIns) {
+      final itemsSummary = r.items
+          .map(
+            (i) =>
+                '${i.productName} x${i.quantity} (${i.unitCost.toStringAsFixed(0)})',
+          )
+          .join(', ');
+      buffer.writeln(
+        [
+          _csvEscape(r.id),
+          r.createdAt.toIso8601String(),
+          _csvEscape(r.supplierName),
+          _csvEscape(r.currencyCode),
+          r.exchangeRate?.toStringAsFixed(2) ?? '',
+          '${r.totalUnits}',
+          r.totalCost.toStringAsFixed(2),
+          _csvEscape(itemsSummary),
+        ].join(';'),
+      );
+    }
+    return buffer.toString();
+  }
+
+  static Future<({String jsonPath, String csvPath})> saveYearArchiveFiles({
+    required int year,
+    required List<Sale> sales,
+    required List<StockInRecord> stockIns,
+    required AppCurrency currency,
+  }) async {
+    final jsonContent = buildYearArchiveJson(
+      year: year,
+      sales: sales,
+      stockIns: stockIns,
+      currency: currency,
+    );
+    final csvContent = buildYearArchiveCsvWithBom(
+      year: year,
+      sales: sales,
+      stockIns: stockIns,
+    );
+    final jsonPath = await saveExportFile(
+      'lumio_archive_$year.json',
+      jsonContent,
+    );
+    final csvPath = await saveExportFile(
+      'lumio_archive_$year.csv',
+      csvContent,
+    );
+    return (jsonPath: jsonPath, csvPath: csvPath);
+  }
+
+  static String buildPriceListText({
+    required List<Product> products,
+    required AppStrings strings,
+    required AppCurrency currency,
+    String? category,
+    bool inStockOnly = true,
+    bool newArrivalsOnly = false,
+    bool includeWholesale = true,
+    bool includeStock = false,
+    String shopName = 'Lumio',
+    String shopPhone = '',
+    DateTime? now,
+  }) {
+    final current = now ?? DateTime.now();
+    final cutoff = current.subtract(const Duration(days: 14));
+    final cleanCategory = category?.trim();
+
+    final filtered = products.where((p) {
+      if (!p.isActive) return false;
+      if (cleanCategory != null &&
+          cleanCategory.isNotEmpty &&
+          p.category.trim() != cleanCategory) {
+        return false;
+      }
+      if (inStockOnly && p.stock <= 0) return false;
+      if (newArrivalsOnly && p.updatedAt.isBefore(cutoff)) return false;
+      return true;
+    }).toList();
+
+    if (filtered.isEmpty) return '';
+
+    filtered.sort((a, b) {
+      final catCmp = a.category.toLowerCase().compareTo(b.category.toLowerCase());
+      if (catCmp != 0) return catCmp;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+
+    final lines = <String>[];
+    if (shopName.trim().isNotEmpty) {
+      lines.add('*${shopName.trim()}*');
+    }
+    if (shopPhone.trim().isNotEmpty) {
+      lines.add(shopPhone.trim());
+    }
+    final title = (cleanCategory != null && cleanCategory.isNotEmpty)
+        ? '${strings.priceListTitle} — $cleanCategory'
+        : strings.priceListTitle;
+    lines.add(title);
+    lines.add(formatDate(current));
+    lines.add('---');
+
+    String formatLine(int idx, Product p) {
+      final unitSuffix = p.unit.trim().isNotEmpty ? '/${p.unit.trim()}' : '';
+      final sb = StringBuffer(
+        '$idx. ${p.name} — ${formatMoney(p.sellPrice, currency)}$unitSuffix',
+      );
+      if (includeWholesale && p.hasWholesalePrice) {
+        final minQtyPart = p.wholesaleMinQty > 0
+            ? ' (${strings.wholesaleFromQtyBadge(p.wholesaleMinQty)})'
+            : '';
+        sb.write(
+          ' | ${strings.wholesaleShort}: ${formatMoney(p.wholesalePrice, currency)}$minQtyPart',
+        );
+      }
+      if (includeStock) {
+        sb.write(' • ${formatQty(p.stock)}');
+      }
+      return sb.toString();
+    }
+
+    if (cleanCategory != null && cleanCategory.isNotEmpty) {
+      for (var i = 0; i < filtered.length; i++) {
+        lines.add(formatLine(i + 1, filtered[i]));
+      }
+    } else {
+      final grouped = <String, List<Product>>{};
+      for (final p in filtered) {
+        final cat = p.category.trim().isEmpty ? 'General' : p.category.trim();
+        grouped.putIfAbsent(cat, () => <Product>[]).add(p);
+      }
+      var firstGroup = true;
+      for (final entry in grouped.entries) {
+        if (!firstGroup) lines.add('');
+        firstGroup = false;
+        lines.add('*${entry.key}*');
+        for (var i = 0; i < entry.value.length; i++) {
+          lines.add(formatLine(i + 1, entry.value[i]));
+        }
+      }
+    }
+
+    return lines.join('\n');
   }
 }

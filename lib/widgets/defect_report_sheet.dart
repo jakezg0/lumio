@@ -42,7 +42,7 @@ class _DefectReportSheetState extends State<DefectReportSheet> {
   Future<void> _shareReport(
     BuildContext context,
     List<({String receiptCode, dynamic item})> entries,
-    int totalUnits,
+    double totalUnits,
     double totalCost,
   ) async {
     final strings = widget.controller.strings;
@@ -68,7 +68,7 @@ class _DefectReportSheetState extends State<DefectReportSheet> {
         final strings = widget.controller.strings;
         final currency = widget.controller.currency;
         final entries = widget.controller.defectWriteOffs(_filter);
-        final totalUnits = entries.fold(0, (sum, e) => sum + e.item.quantity);
+        final totalUnits = entries.fold(0.0, (sum, e) => sum + e.item.quantity);
         final totalCost = entries.fold(0.0, (sum, e) => sum + e.item.lineCost);
 
         return Padding(

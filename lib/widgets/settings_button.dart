@@ -6,7 +6,9 @@ import '../l10n/app_strings.dart';
 import '../screens/archive_trash_screen.dart';
 import '../state/shop_controller.dart';
 import 'backup_export_sheet.dart';
+import 'catalog_maintenance_sheet.dart';
 import 'feature_usage_sheet.dart';
+import 'thermal_printer_dialog.dart';
 
 class SettingsButton extends StatelessWidget {
   const SettingsButton({
@@ -18,12 +20,56 @@ class SettingsButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: controller.strings.settingsTitle,
-      onPressed: () => _showSettingsDialog(context),
-      icon: Icon(
-        controller.cashierMode ? Icons.lock_outline : Icons.settings_outlined,
-      ),
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final hasSync = controller.googleSheetsUrl.trim().isNotEmpty;
+        final Color? dotColor;
+        if (!hasSync) {
+          dotColor = null;
+        } else if (controller.lastSheetSyncIsError) {
+          dotColor = Theme.of(context).colorScheme.error;
+        } else if (controller.isSyncing) {
+          dotColor = Theme.of(context).colorScheme.primary;
+        } else if (controller.pendingSync) {
+          dotColor = Colors.amber.shade700;
+        } else {
+          dotColor = Colors.green.shade600;
+        }
+        return IconButton(
+          tooltip: controller.lastSheetSyncNotice.isNotEmpty && hasSync
+              ? '${controller.strings.settingsTitle} • ${controller.lastSheetSyncNotice}'
+              : controller.strings.settingsTitle,
+          onPressed: () => _showSettingsDialog(context),
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(
+                controller.cashierMode
+                    ? Icons.lock_outline
+                    : Icons.settings_outlined,
+              ),
+              if (dotColor != null)
+                Positioned(
+                  right: -2,
+                  top: -2,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: dotColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.surface,
+                        width: 1.2,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -478,7 +524,31 @@ class SettingsButton extends StatelessWidget {
                             value: controller.allowNegativeStock,
                             onChanged: controller.setAllowNegativeStock,
                           ),
+                          const Divider(height: 1),
+                          SwitchListTile(
+                            dense: true,
+                            secondary: const Icon(Icons.percent_outlined),
+                            title: Text(strings.allowCashierDiscountsLabel),
+                            subtitle: Text(strings.allowCashierDiscountsHint),
+                            value: controller.allowCashierDiscounts,
+                            onChanged: controller.setAllowCashierDiscounts,
+                          ),
                         ],
+                        const Divider(height: 1),
+                        ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.print_outlined),
+                          title: Text(strings.thermalPrinterTitle),
+                          trailing: const Icon(Icons.chevron_right, size: 20),
+                          onTap: () {
+                            Navigator.of(sheetContext).pop();
+                            showThermalPrinterSetupDialog(
+                              context,
+                              strings: strings,
+                              shopName: controller.shopName,
+                            );
+                          },
+                        ),
                       ],
                     ),
                   ),
@@ -523,12 +593,10 @@ class SettingsButton extends StatelessWidget {
                           const Divider(height: 1),
                           ListTile(
                             dense: true,
-                            leading: const Icon(Icons.table_chart_outlined),
-                            title: Text(strings.googleSheetsBtn),
+                            leading: const Icon(Icons.cloud_sync_outlined),
+                            title: Text(strings.syncAndBackupTitle),
                             subtitle: Text(
-                              controller.googleSheetsUrl.isNotEmpty
-                                  ? strings.connectedStatus
-                                  : strings.notConfiguredStatus,
+                              '${controller.googleSheetsUrl.isNotEmpty ? strings.connectedStatus : strings.notConfiguredStatus} • CSV / JSON • ${controller.products.length}',
                               style: TextStyle(
                                 color: controller.googleSheetsUrl.isNotEmpty
                                     ? Colors.green.shade700
@@ -550,30 +618,6 @@ class SettingsButton extends StatelessWidget {
                                 useSafeArea: true,
                                 builder: (_) =>
                                     GoogleSheetsSheet(controller: controller),
-                              );
-                            },
-                          ),
-                          const Divider(height: 1),
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.import_export),
-                            title: Text(strings.backupAndExport),
-                            subtitle: Text(
-                              'CSV / JSON • ${controller.products.length}',
-                            ),
-                            trailing:
-                                const Icon(Icons.chevron_right, size: 20),
-                            onTap: () {
-                              controller.trackFeatureUsage(
-                                FeatureUsageKeys.backupExport,
-                              );
-                              Navigator.of(sheetContext).pop();
-                              showModalBottomSheet<void>(
-                                context: context,
-                                isScrollControlled: true,
-                                useSafeArea: true,
-                                builder: (_) =>
-                                    BackupExportSheet(controller: controller),
                               );
                             },
                           ),
@@ -624,6 +668,31 @@ class SettingsButton extends StatelessWidget {
                               );
                             },
                           ),
+                          if (!controller.cashierMode) ...[
+                            const Divider(height: 1),
+                            ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.build_circle_outlined),
+                              title: Text(strings.catalogMaintenanceTitle),
+                              subtitle: Text(
+                                strings.catalogMaintenanceSubtitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: const Icon(Icons.chevron_right, size: 20),
+                              onTap: () {
+                                Navigator.of(sheetContext).pop();
+                                showModalBottomSheet<void>(
+                                  context: context,
+                                  isScrollControlled: true,
+                                  useSafeArea: true,
+                                  builder: (_) => CatalogMaintenanceSheet(
+                                    controller: controller,
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
                           const Divider(height: 1),
                           ListTile(
                             dense: true,
@@ -673,7 +742,6 @@ class _PinPromptDialog extends StatefulWidget {
     required this.hintLabel,
     required this.cancelLabel,
     required this.confirmLabel,
-    this.initialPin = '',
     this.autofocus = false,
     this.biometricBtnLabel,
     this.forgotPinBtnLabel,
@@ -686,7 +754,6 @@ class _PinPromptDialog extends StatefulWidget {
   final String hintLabel;
   final String cancelLabel;
   final String confirmLabel;
-  final String initialPin;
   final bool autofocus;
   final String? biometricBtnLabel;
   final String? forgotPinBtnLabel;
@@ -701,7 +768,7 @@ class _PinPromptDialogState extends State<_PinPromptDialog> {
   @override
   void initState() {
     super.initState();
-    _pinCtrl = TextEditingController(text: widget.initialPin);
+    _pinCtrl = TextEditingController();
   }
 
   @override

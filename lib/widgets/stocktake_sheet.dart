@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../models/stock_in.dart';
 import '../screens/barcode_scanner_screen.dart';
 import '../state/shop_controller.dart';
+import 'attach_barcode_sheet.dart';
 import 'currency_calculator_dialog.dart';
 import 'formatters.dart';
+import 'voice_search_button.dart';
 
 class StocktakeSheet extends StatefulWidget {
   const StocktakeSheet({
@@ -32,6 +34,7 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
   String? _lastScannedId;
   String? _scanFeedback;
   bool _scanError = false;
+  bool _filtersExpanded = false;
 
   @override
   void initState() {
@@ -66,11 +69,11 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
   }
 
   void _persistDraft() {
-    final counts = <String, int>{};
+    final counts = <String, double>{};
     for (final p in widget.controller.products) {
-      final parsed = int.tryParse(_controllers[p.id]?.text.trim() ?? '');
+      final parsed = parseQty(_controllers[p.id]?.text ?? '');
       if (parsed == null) continue;
-      if (_countedIds.contains(p.id) || parsed != p.stock) {
+      if (_countedIds.contains(p.id) || (parsed - p.stock).abs() > 0.0005) {
         counts[p.id] = parsed;
       }
     }
@@ -147,7 +150,11 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
         _scanFeedback = msg;
         _scanError = true;
       });
-      return ScanBatchFeedback(found: false, message: msg);
+      return ScanBatchFeedback(
+        found: false,
+        message: msg,
+        notFoundCode: code.trim(),
+      );
     }
 
     final delta = _scanIncrementFor(
@@ -160,13 +167,13 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
     final ctrl = _controllers.putIfAbsent(
       found.id,
       () => TextEditingController(
-        text: _countFromZero ? '0' : '${found.stock}',
+        text: _countFromZero ? '0' : formatQty(found.stock),
       ),
     );
-    final currentActual = int.tryParse(ctrl.text.trim()) ??
-        (_countFromZero && !_countedIds.contains(found.id) ? 0 : found.stock);
+    final currentActual = parseQty(ctrl.text) ??
+        (_countFromZero && !_countedIds.contains(found.id) ? 0.0 : found.stock);
     final nextActual = currentActual + delta;
-    ctrl.text = '$nextActual';
+    ctrl.text = formatQty(nextActual);
 
     final msg = strings.scannedAddedToStocktakeMsg(delta, found.name, nextActual);
     _searchController.clear();
@@ -188,19 +195,27 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
     final strings = widget.controller.strings;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => BarcodeScannerScreen(
+        builder: (scanCtx) => BarcodeScannerScreen(
           strings: strings,
           onContinuousScan: _handleContinuousScan,
+          onAttachBarcode: (code) async {
+            final linked = await showAttachBarcodeSheet(
+              scanCtx,
+              controller: widget.controller,
+              barcode: code,
+            );
+            return linked != null;
+          },
         ),
       ),
     );
   }
 
   Future<void> _apply() async {
-    final counts = <String, int>{};
+    final counts = <String, double>{};
     for (final p in widget.controller.products) {
       if (_countFromZero && !_countedIds.contains(p.id)) continue;
-      final parsed = int.tryParse(_controllers[p.id]?.text.trim() ?? '');
+      final parsed = parseQty(_controllers[p.id]?.text ?? '');
       if (parsed != null) {
         counts[p.id] = parsed;
       }
@@ -231,7 +246,7 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
       }
       if (!_countFromZero || _countedIds.contains(p.id)) {
         final actual =
-            int.tryParse(_controllers[p.id]?.text.trim() ?? '') ?? p.stock;
+            parseQty(_controllers[p.id]?.text ?? '') ?? p.stock;
         final diff = actual - p.stock;
         if (diff != 0) {
           changedCount += 1;
@@ -259,8 +274,8 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
       if (_discrepanciesOnly) {
         if (_countFromZero && !_countedIds.contains(p.id)) return false;
         final actual =
-            int.tryParse(_controllers[p.id]?.text.trim() ?? '') ?? p.stock;
-        if (actual == p.stock) return false;
+            parseQty(_controllers[p.id]?.text ?? '') ?? p.stock;
+        if ((actual - p.stock).abs() < 0.0005) return false;
       }
       if (query.isEmpty) return true;
       return p.name.toLowerCase().contains(query) ||
@@ -287,11 +302,17 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
         _countFromZero ||
         _countedIds.isNotEmpty;
 
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
-      child: SingleChildScrollView(
+    final filterSummary = [
+      _selectedCategory ?? strings.allCategory,
+      if (_countFromZero) strings.countFromZeroLabel,
+      if (changedCount > 0) strings.discrepanciesOnlyFilter(changedCount),
+    ].join(' • ');
+
+    return SizedBox(
+      height: MediaQuery.sizeOf(context).height * 0.90,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 12, 16, bottomInset + 12),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
@@ -320,15 +341,29 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
                     decoration: InputDecoration(
                       hintText: strings.searchGoodsHint,
                       prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _searchQuery.isNotEmpty
-                          ? IconButton(
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_searchQuery.isNotEmpty)
+                            IconButton(
                               onPressed: () {
                                 _searchController.clear();
                                 setState(() => _searchQuery = '');
                               },
                               icon: const Icon(Icons.clear),
-                            )
-                          : null,
+                            ),
+                          VoiceSearchButton(
+                            strings: strings,
+                            language: widget.controller.language,
+                            onResult: (text) {
+                              _searchController.text = text;
+                              _searchController.selection =
+                                  TextSelection.collapsed(offset: text.length);
+                              setState(() => _searchQuery = text);
+                            },
+                          ),
+                        ],
+                      ),
                       border: const OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -366,97 +401,157 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
                 ),
               ),
             ],
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                FilterChip(
-                  visualDensity: VisualDensity.compact,
-                  avatar: const Icon(Icons.restart_alt, size: 18),
-                  label: Text(strings.countFromZeroLabel),
-                  selected: _countFromZero,
-                  onSelected: _toggleCountFromZero,
+            const SizedBox(height: 6),
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () =>
+                  setState(() => _filtersExpanded = !_filtersExpanded),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
                 ),
-                FilterChip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(strings.discrepanciesOnlyFilter(changedCount)),
-                  selected: _discrepanciesOnly,
-                  onSelected: (v) => setState(() {
-                    _discrepanciesOnly = v;
-                    if (v) _uncountedOnly = false;
-                  }),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                if (_countFromZero)
-                  FilterChip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text(strings.uncountedOnlyFilter(uncountedInScope)),
-                    selected: _uncountedOnly,
-                    onSelected: (v) => setState(() {
-                      _uncountedOnly = v;
-                      if (v) _discrepanciesOnly = false;
-                    }),
-                  ),
-              ],
-            ),
-            if (categories.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 40,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
+                child: Row(
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ChoiceChip(
-                        visualDensity: VisualDensity.compact,
-                        label: Text(
-                          '${strings.allCategory} (${allProducts.length})',
+                    const Icon(Icons.tune, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        filterSummary,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
                         ),
-                        selected: _selectedCategory == null,
-                        onSelected: (_) {
-                          setState(() => _selectedCategory = null);
-                          _persistDraft();
-                        },
                       ),
                     ),
-                    for (final cat in categories)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          visualDensity: VisualDensity.compact,
-                          label: Text('$cat (${categoryCounts[cat] ?? 0})'),
-                          selected: _selectedCategory == cat,
-                          onSelected: (_) {
-                            setState(() => _selectedCategory = cat);
-                            _persistDraft();
-                          },
-                        ),
-                      ),
+                    Icon(
+                      _filtersExpanded
+                          ? Icons.expand_less
+                          : Icons.expand_more,
+                      size: 20,
+                    ),
                   ],
                 ),
               ),
-            ],
+            ),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              child: !_filtersExpanded
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              FilterChip(
+                                visualDensity: VisualDensity.compact,
+                                avatar: const Icon(Icons.restart_alt, size: 18),
+                                label: Text(strings.countFromZeroLabel),
+                                selected: _countFromZero,
+                                onSelected: _toggleCountFromZero,
+                              ),
+                              FilterChip(
+                                visualDensity: VisualDensity.compact,
+                                label: Text(
+                                  strings.discrepanciesOnlyFilter(changedCount),
+                                ),
+                                selected: _discrepanciesOnly,
+                                onSelected: (v) => setState(() {
+                                  _discrepanciesOnly = v;
+                                  if (v) _uncountedOnly = false;
+                                }),
+                              ),
+                              if (_countFromZero)
+                                FilterChip(
+                                  visualDensity: VisualDensity.compact,
+                                  label: Text(
+                                    strings.uncountedOnlyFilter(
+                                      uncountedInScope,
+                                    ),
+                                  ),
+                                  selected: _uncountedOnly,
+                                  onSelected: (v) => setState(() {
+                                    _uncountedOnly = v;
+                                    if (v) _discrepanciesOnly = false;
+                                  }),
+                                ),
+                            ],
+                          ),
+                          if (categories.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              height: 40,
+                              child: ListView(
+                                scrollDirection: Axis.horizontal,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: ChoiceChip(
+                                      visualDensity: VisualDensity.compact,
+                                      label: Text(
+                                        '${strings.allCategory} (${allProducts.length})',
+                                      ),
+                                      selected: _selectedCategory == null,
+                                      onSelected: (_) {
+                                        setState(
+                                          () => _selectedCategory = null,
+                                        );
+                                        _persistDraft();
+                                      },
+                                    ),
+                                  ),
+                                  for (final cat in categories)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: ChoiceChip(
+                                        visualDensity: VisualDensity.compact,
+                                        label: Text(
+                                          '$cat (${categoryCounts[cat] ?? 0})',
+                                        ),
+                                        selected: _selectedCategory == cat,
+                                        onSelected: (_) {
+                                          setState(
+                                            () => _selectedCategory = cat,
+                                          );
+                                          _persistDraft();
+                                        },
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+            ),
             const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 260),
+            Expanded(
               child: products.isEmpty
                   ? Padding(
                       padding: const EdgeInsets.symmetric(vertical: 24),
                       child: Center(child: Text(strings.noGoodsMatch)),
                     )
                   : ListView.separated(
-                      shrinkWrap: true,
                       itemCount: products.length,
                       separatorBuilder: (_, _) => const SizedBox(height: 8),
                       itemBuilder: (context, index) {
                         final p = products[index];
                         final ctrl = _controllers[p.id]!;
                         final isCounted = _countedIds.contains(p.id);
-                        final actual = int.tryParse(ctrl.text.trim()) ??
-                            (_countFromZero && !isCounted ? 0 : p.stock);
+                        final actual = parseQty(ctrl.text) ??
+                            (_countFromZero && !isCounted ? 0.0 : p.stock);
                         final diff = actual - p.stock;
-                        final diffLabel = diff > 0 ? '+$diff' : '$diff';
+                        final diffLabel = diff > 0 ? '+${formatQty(diff)}' : formatQty(diff);
 
                         return Row(
                           children: [
@@ -514,11 +609,11 @@ class _StocktakeSheetState extends State<StocktakeSheet> {
                               width: 88,
                               child: TextField(
                                 controller: ctrl,
-                                keyboardType: TextInputType.number,
-                                onTap: () => ctrl.selection = TextSelection(
-                                  baseOffset: 0,
-                                  extentOffset: ctrl.text.length,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                  decimal: true,
                                 ),
+                                onTap: () => selectAllText(ctrl),
                                 onChanged: (_) {
                                   setState(() => _countedIds.add(p.id));
                                   _persistDraft();

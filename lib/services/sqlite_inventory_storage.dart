@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:sqflite/sqflite.dart';
 
+import '../models/cash_drawer_movement.dart';
 import '../models/customer.dart';
 import '../models/expense.dart';
 import '../models/product.dart';
@@ -14,11 +16,20 @@ class SqliteInventoryStorage implements InventoryStorage {
   SqliteInventoryStorage({
     String? dbName,
     InventoryStorage? legacyJsonFallback,
+    this.schemaVersion = currentSchemaVersion,
   })  : _dbName = dbName ?? 'lumio_shop.db',
         _legacyStorage = legacyJsonFallback ?? JsonFileInventoryStorage();
 
+  static const int currentSchemaVersion = 1;
+  static const int inMemoryChangeHistoryDays = 90;
+  static const String preUpgradeBackupDbName = 'lumio_pre_upgrade.db';
+  static const String lastGoodBackupDbName = 'lumio_last_good.db';
+  static const String preRestoreBackupDbName = 'lumio_pre_restore.db';
+  static const String preRestoreBackupJsonName = 'lumio_pre_restore.json';
+
   final String _dbName;
   final InventoryStorage _legacyStorage;
+  final int schemaVersion;
 
   Database? _db;
   bool _useFallback = false;
@@ -30,7 +41,105 @@ class SqliteInventoryStorage implements InventoryStorage {
   final Map<String, String> _savedCustomers = {};
   final Map<String, String> _savedStockIns = {};
   final Map<String, String> _savedChanges = {};
+  final Map<String, DateTime> _savedChangeDates = {};
   final Map<String, String> _savedMeta = {};
+
+  static String preUpgradeBackupPathFor(String dbPath) {
+    final parent = File(dbPath).parent.path;
+    return '$parent/$preUpgradeBackupDbName';
+  }
+
+  static String lastGoodBackupPathFor(String dbPath) {
+    final parent = File(dbPath).parent.path;
+    return '$parent/$lastGoodBackupDbName';
+  }
+
+  static String preRestoreBackupPathFor(String dbPath) {
+    final parent = File(dbPath).parent.path;
+    return '$parent/$preRestoreBackupDbName';
+  }
+
+  static String preRestoreJsonPathFor(String dbPath) {
+    final parent = File(dbPath).parent.path;
+    return '$parent/$preRestoreBackupJsonName';
+  }
+
+  static bool isQuickCheckOk(List<Map<String, Object?>> rows) {
+    if (rows.length != 1) return false;
+    final val = rows.first.values.isNotEmpty
+        ? '${rows.first.values.first ?? ''}'.trim().toLowerCase()
+        : '';
+    return val == 'ok';
+  }
+
+  /// Restores [dbPath] from the latest available local `.db` backup
+  /// (`lumio_last_good.db` first, then `lumio_pre_upgrade.db`).
+  static Future<String?> restoreDatabaseFromLocalBackup(String dbPath) async {
+    final candidates = [
+      lastGoodBackupPathFor(dbPath),
+      preUpgradeBackupPathFor(dbPath),
+    ];
+    for (final candidatePath in candidates) {
+      final candidate = File(candidatePath);
+      if (!await candidate.exists()) continue;
+      final len = await candidate.length();
+      if (len <= 0) continue;
+      for (final suffix in const ['-wal', '-shm']) {
+        final stale = File('$dbPath$suffix');
+        if (await stale.exists()) {
+          await stale.delete();
+        }
+      }
+      await backupDatabaseFileAtomically(candidatePath, targetPath: dbPath);
+      return candidatePath;
+    }
+    return null;
+  }
+
+  static Future<File?> backupDatabaseFileAtomically(
+    String dbPath, {
+    String? targetPath,
+  }) async {
+    final sourceFile = File(dbPath);
+    if (!await sourceFile.exists()) return null;
+
+    final backupPath = targetPath ?? preUpgradeBackupPathFor(dbPath);
+    final tempPath = '$backupPath.tmp';
+    await sourceFile.copy(tempPath);
+
+    final targetFile = File(backupPath);
+    if (await targetFile.exists()) {
+      await targetFile.delete();
+    }
+    final result = await File(tempPath).rename(backupPath);
+
+    for (final suffix in const ['-wal', '-shm']) {
+      final stale = File('$backupPath$suffix');
+      if (await stale.exists()) {
+        await stale.delete();
+      }
+    }
+    return result;
+  }
+
+  Future<void> _backupBeforeUpgradeIfNeeded(
+    Database db,
+    String dbPath,
+  ) async {
+    final rows = await db.rawQuery('PRAGMA user_version');
+    final currentVersion = rows.isNotEmpty
+        ? (rows.first.values.first as num?)?.toInt() ?? 0
+        : 0;
+    if (currentVersion <= 0 || currentVersion >= schemaVersion) {
+      return;
+    }
+    try {
+      await db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (_) {
+      // Best-effort WAL flush before copying the database file.
+    }
+    await backupDatabaseFileAtomically(dbPath);
+  }
 
   Future<Database?> _getDatabase() async {
     if (_useFallback) return null;
@@ -42,14 +151,62 @@ class SqliteInventoryStorage implements InventoryStorage {
     try {
       final dbDir = await getDatabasesPath();
       final dbPath = '$dbDir/$_dbName';
-      _db = await openDatabase(
+      Future<Database> openAndVerify() async {
+        final opened = await openDatabase(
+          dbPath,
+          version: schemaVersion,
+          onConfigure: (db) async {
+            await _backupBeforeUpgradeIfNeeded(db, dbPath);
+            await db.rawQuery('PRAGMA journal_mode = WAL');
+            await db.rawQuery('PRAGMA synchronous = FULL');
+          },
+          onUpgrade: (db, oldVersion, newVersion) async {
+            // Future schema migrations go here (e.g. if (oldVersion < 2) { ... }).
+            // lumio_pre_upgrade.db is already saved in onConfigure before this runs.
+          },
+          onCreate: (db, version) async {
+            await _createTables(db);
+          },
+        );
+        final checkRows = await opened.rawQuery('PRAGMA quick_check');
+        if (!isQuickCheckOk(checkRows)) {
+          await opened.close();
+          throw const FormatException('SQLite PRAGMA quick_check failed');
+        }
+        return opened;
+      }
+
+      try {
+        _db = await openAndVerify();
+      } catch (_) {
+        final restoredFrom = await restoreDatabaseFromLocalBackup(dbPath);
+        if (restoredFrom == null) rethrow;
+        _db = await openAndVerify();
+      }
+      await _refreshLastGoodBackupIfPossible(_db!, dbPath);
+      return _db;
+    } catch (_) {
+      _useFallback = true;
+      return null;
+    }
+  }
+
+  Future<void> _refreshLastGoodBackupIfPossible(
+    Database db,
+    String dbPath,
+  ) async {
+    try {
+      await db.rawQuery('PRAGMA wal_checkpoint(PASSIVE)');
+      await backupDatabaseFileAtomically(
         dbPath,
-        version: 1,
-        onConfigure: (db) async {
-          await db.rawQuery('PRAGMA journal_mode = WAL');
-          await db.rawQuery('PRAGMA synchronous = NORMAL');
-        },
-        onCreate: (db, version) async {
+        targetPath: lastGoodBackupPathFor(dbPath),
+      );
+    } catch (_) {
+      // Best-effort local backup refresh.
+    }
+  }
+
+  Future<void> _createTables(Database db) async {
           await db.execute('''
             CREATE TABLE products (
               id TEXT PRIMARY KEY,
@@ -153,13 +310,6 @@ class SqliteInventoryStorage implements InventoryStorage {
               value TEXT NOT NULL
             )
           ''');
-        },
-      );
-      return _db;
-    } catch (_) {
-      _useFallback = true;
-      return null;
-    }
   }
 
   static String _productStatus(Product p) {
@@ -205,8 +355,15 @@ class SqliteInventoryStorage implements InventoryStorage {
           jsonEncode(snapshot.heldSales.map((h) => h.toJson()).toList()),
       'negativeStockReminders': jsonEncode(snapshot.negativeStockReminders),
       'allowNegativeStock': snapshot.allowNegativeStock ? '1' : '0',
+      'allowCashierDiscounts': snapshot.allowCashierDiscounts ? '1' : '0',
       'autoBackupEnabled': snapshot.autoBackupEnabled ? '1' : '0',
       'lastAutoBackupAt': snapshot.lastAutoBackupAt,
+      'lastExternalBackupAt': snapshot.lastExternalBackupAt,
+      'lastExternalBackupReminderAt': snapshot.lastExternalBackupReminderAt,
+      'lastCloudBackupProductsCount':
+          '${snapshot.lastCloudBackupProductsCount}',
+      'lastCloudBackupSalesCount': '${snapshot.lastCloudBackupSalesCount}',
+      'pendingSync': snapshot.pendingSync ? '1' : '0',
       'cloudBackupHashes': jsonEncode(snapshot.cloudBackupHashes),
       'sheetCatalogBaseline': jsonEncode(snapshot.sheetCatalogBaseline),
       'inventorySnapshots': jsonEncode(
@@ -214,6 +371,15 @@ class SqliteInventoryStorage implements InventoryStorage {
       ),
       'featureUsage': jsonEncode(
         snapshot.featureUsage.map((k, v) => MapEntry(k, v.toJson())),
+      ),
+      'inventorySelectedCategory': snapshot.inventorySelectedCategory,
+      'inventorySort': snapshot.inventorySort,
+      'posSelectedCategory': snapshot.posSelectedCategory,
+      'sellers': jsonEncode(snapshot.sellers),
+      'activeSeller': snapshot.activeSeller,
+      'priceTagQueue': jsonEncode(snapshot.priceTagQueue),
+      'cashDrawerMovements': jsonEncode(
+        snapshot.cashDrawerMovements.map((e) => e.toJson()).toList(),
       ),
     };
   }
@@ -230,15 +396,52 @@ class SqliteInventoryStorage implements InventoryStorage {
       for (final row in metaRows) '${row['key']}': '${row['value']}',
     };
 
-    final productRows = await db.query('products');
-    final saleRows = await db.query('sales', orderBy: 'created_at DESC');
-    final expenseRows = await db.query('expenses', orderBy: 'created_at DESC');
+    final salesCutoffDt = DateTime.now().subtract(const Duration(days: 30));
+    final salesCutoff = salesCutoffDt.toIso8601String();
+    final productRows = await db.query(
+      'products',
+      where: 'status = ?',
+      whereArgs: ['active'],
+    );
+    final saleRows = await db.query(
+      'sales',
+      where: "status = ? AND (created_at >= ? OR payload LIKE '%\"postPay\"%')",
+      whereArgs: ['active', salesCutoff],
+      orderBy: 'created_at DESC',
+    );
+    final expenseRows = await db.query(
+      'expenses',
+      where: 'status = ?',
+      whereArgs: ['active'],
+      orderBy: 'created_at DESC',
+    );
     final customerRows = await db.query('customers');
     final stockInRows = await db.query('stock_ins', orderBy: 'created_at DESC');
-    final changeRows =
-        await db.query('product_changes', orderBy: 'created_at DESC');
+    final memoryCutoff = DateTime.now()
+        .subtract(const Duration(days: inMemoryChangeHistoryDays))
+        .toIso8601String();
+    final changeRows = await db.query(
+      'product_changes',
+      where: 'created_at >= ?',
+      whereArgs: [memoryCutoff],
+      orderBy: 'created_at DESC',
+    );
 
-    final dbIsEmpty = productRows.isEmpty &&
+    var dbIsEmpty = productRows.isEmpty &&
+        saleRows.isEmpty &&
+        expenseRows.isEmpty &&
+        customerRows.isEmpty &&
+        stockInRows.isEmpty &&
+        meta['migrated_from_json'] != '1';
+    if (dbIsEmpty) {
+      final countRows = await db.rawQuery(
+        'SELECT (SELECT COUNT(*) FROM products) + '
+        '(SELECT COUNT(*) FROM sales) + '
+        '(SELECT COUNT(*) FROM expenses) AS total_cnt',
+      );
+      final totalCnt = (countRows.first['total_cnt'] as num?)?.toInt() ?? 0;
+      dbIsEmpty = totalCnt == 0;
+    }
         saleRows.isEmpty &&
         expenseRows.isEmpty &&
         customerRows.isEmpty &&
@@ -279,8 +482,12 @@ class SqliteInventoryStorage implements InventoryStorage {
     for (final row in saleRows) {
       final id = '${row['id']}';
       final payload = '${row['payload']}';
+      final sale = Sale.fromJson(jsonDecode(payload) as Map<String, dynamic>);
+      if (sale.isPaid && sale.createdAt.isBefore(salesCutoffDt)) {
+        continue;
+      }
       _savedSales[id] = payload;
-      sales.add(Sale.fromJson(jsonDecode(payload) as Map<String, dynamic>));
+      sales.add(sale);
     }
 
     _savedExpenses.clear();
@@ -314,14 +521,17 @@ class SqliteInventoryStorage implements InventoryStorage {
     }
 
     _savedChanges.clear();
+    _savedChangeDates.clear();
     final productChanges = <ProductChangeEntry>[];
     for (final row in changeRows) {
       final id = '${row['id']}';
       final payload = '${row['payload']}';
-      _savedChanges[id] = payload;
-      productChanges.add(
-        ProductChangeEntry.fromJson(jsonDecode(payload) as Map<String, dynamic>),
+      final entry = ProductChangeEntry.fromJson(
+        jsonDecode(payload) as Map<String, dynamic>,
       );
+      _savedChanges[id] = payload;
+      _savedChangeDates[id] = entry.createdAt;
+      productChanges.add(entry);
     }
 
     _savedMeta
@@ -419,6 +629,21 @@ class SqliteInventoryStorage implements InventoryStorage {
       } catch (_) {}
     }
 
+    final cashDrawerMovements = <CashDrawerMovement>[];
+    final rawCashMovements = meta['cashDrawerMovements'] ?? '';
+    if (rawCashMovements.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawCashMovements);
+        if (decoded is List) {
+          for (final item in decoded) {
+            if (item is Map<String, dynamic>) {
+              cashDrawerMovements.add(CashDrawerMovement.fromJson(item));
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     final hasAnyData = products.isNotEmpty ||
         sales.isNotEmpty ||
         expenses.isNotEmpty ||
@@ -452,19 +677,228 @@ class SqliteInventoryStorage implements InventoryStorage {
       heldSales: heldSales,
       negativeStockReminders: decodeIntMap(meta['negativeStockReminders']),
       allowNegativeStock: meta['allowNegativeStock'] != '0',
+      allowCashierDiscounts: meta['allowCashierDiscounts'] != '0',
       autoBackupEnabled: meta['autoBackupEnabled'] != '0',
       lastAutoBackupAt: meta['lastAutoBackupAt'] ?? '',
+      lastExternalBackupAt: meta['lastExternalBackupAt'] ?? '',
+      lastExternalBackupReminderAt:
+          meta['lastExternalBackupReminderAt'] ?? '',
+      lastCloudBackupProductsCount:
+          int.tryParse(meta['lastCloudBackupProductsCount'] ?? '') ?? -1,
+      lastCloudBackupSalesCount:
+          int.tryParse(meta['lastCloudBackupSalesCount'] ?? '') ?? -1,
+      pendingSync: meta['pendingSync'] == '1' || meta['pendingSync'] == 'true',
       cloudBackupHashes: decodeStringMap(meta['cloudBackupHashes']),
       sheetCatalogBaseline: decodeStringMap(meta['sheetCatalogBaseline']),
       inventorySnapshots: inventorySnapshots,
       featureUsage: featureUsage,
+      inventorySelectedCategory: meta['inventorySelectedCategory'] ?? '',
+      inventorySort: (meta['inventorySort'] ?? '').isNotEmpty
+          ? meta['inventorySort']!
+          : 'newest',
+      posSelectedCategory: meta['posSelectedCategory'] ?? '',
+      sellers: decodeStringList(meta['sellers']),
+      activeSeller: meta['activeSeller'] ?? '',
+      priceTagQueue: decodeStringList(meta['priceTagQueue']),
+      cashDrawerMovements: cashDrawerMovements,
     );
+  }
+
+  @override
+  Future<({List<Product> products, List<Sale> sales, List<Expense> expenses})>
+      loadArchiveAndTrash() async {
+    final db = await _getDatabase();
+    if (db == null) {
+      return _legacyStorage.loadArchiveAndTrash();
+    }
+    final productRows = await db.query(
+      'products',
+      where: 'status != ?',
+      whereArgs: ['active'],
+    );
+    final saleRows = await db.query(
+      'sales',
+      where: 'status != ?',
+      whereArgs: ['active'],
+      orderBy: 'created_at DESC',
+    );
+    final expenseRows = await db.query(
+      'expenses',
+      where: 'status != ?',
+      whereArgs: ['active'],
+      orderBy: 'created_at DESC',
+    );
+
+    final products = <Product>[];
+    for (final row in productRows) {
+      final id = '${row['id']}';
+      final payload = '${row['payload']}';
+      _savedProducts[id] = payload;
+      products.add(Product.fromJson(jsonDecode(payload) as Map<String, dynamic>));
+    }
+    final sales = <Sale>[];
+    for (final row in saleRows) {
+      final id = '${row['id']}';
+      final payload = '${row['payload']}';
+      _savedSales[id] = payload;
+      sales.add(Sale.fromJson(jsonDecode(payload) as Map<String, dynamic>));
+    }
+    final expenses = <Expense>[];
+    for (final row in expenseRows) {
+      final id = '${row['id']}';
+      final payload = '${row['payload']}';
+      _savedExpenses[id] = payload;
+      expenses.add(Expense.fromJson(jsonDecode(payload) as Map<String, dynamic>));
+    }
+    return (products: products, sales: sales, expenses: expenses);
+  }
+
+  @override
+  Future<List<Sale>> loadAllActiveSales() async {
+    final db = await _getDatabase();
+    if (db == null) {
+      return _legacyStorage.loadAllActiveSales();
+    }
+    final saleRows = await db.query(
+      'sales',
+      where: 'status = ?',
+      whereArgs: ['active'],
+      orderBy: 'created_at DESC',
+    );
+    final sales = <Sale>[];
+    for (final row in saleRows) {
+      final id = '${row['id']}';
+      final payload = '${row['payload']}';
+      _savedSales[id] = payload;
+      sales.add(Sale.fromJson(jsonDecode(payload) as Map<String, dynamic>));
+    }
+    return sales;
+  }
+
+  @override
+  Future<List<ProductChangeEntry>> loadProductChanges({
+    int? days,
+    String? productId,
+    bool priceOnly = false,
+  }) async {
+    final db = await _getDatabase();
+    if (db == null) {
+      return _legacyStorage.loadProductChanges(
+        days: days,
+        productId: productId,
+        priceOnly: priceOnly,
+      );
+    }
+    final whereParts = <String>[];
+    final whereArgs = <Object?>[];
+    if (days != null && days > 0) {
+      final cutoff =
+          DateTime.now().subtract(Duration(days: days)).toIso8601String();
+      whereParts.add('created_at >= ?');
+      whereArgs.add(cutoff);
+    }
+    if (productId != null && productId.isNotEmpty) {
+      whereParts.add('product_id = ?');
+      whereArgs.add(productId);
+    }
+    if (priceOnly) {
+      whereParts.add('has_price = 1');
+    }
+    final rows = await db.query(
+      'product_changes',
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: whereArgs.isEmpty ? null : whereArgs,
+      orderBy: 'created_at DESC',
+    );
+    return rows
+        .map(
+          (row) => ProductChangeEntry.fromJson(
+            jsonDecode('${row['payload']}') as Map<String, dynamic>,
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<int> deleteProductChanges({int? olderThanDays}) async {
+    final db = await _getDatabase();
+    if (db == null) {
+      return _legacyStorage.deleteProductChanges(olderThanDays: olderThanDays);
+    }
+    if (olderThanDays == null) {
+      final count = await db.delete('product_changes');
+      _savedChanges.clear();
+      _savedChangeDates.clear();
+      return count;
+    }
+    final cutoffDt = DateTime.now().subtract(Duration(days: olderThanDays));
+    final count = await db.delete(
+      'product_changes',
+      where: 'created_at < ?',
+      whereArgs: [cutoffDt.toIso8601String()],
+    );
+    final toRemove = _savedChangeDates.entries
+        .where((e) => e.value.isBefore(cutoffDt))
+        .map((e) => e.key)
+        .toList();
+    for (final id in toRemove) {
+      _savedChanges.remove(id);
+      _savedChangeDates.remove(id);
+    }
+    return count;
   }
 
   @override
   Future<void> save(ShopDataSnapshot snapshot) {
     _saveQueue = _saveQueue.then((_) => _saveInternal(snapshot)).catchError((_) {});
     return _saveQueue;
+  }
+
+  @override
+  Future<void> savePreRestoreBackup(ShopDataSnapshot snapshot) async {
+    final db = await _getDatabase();
+    if (db == null) {
+      await _legacyStorage.savePreRestoreBackup(snapshot);
+      return;
+    }
+    final dbDir = await getDatabasesPath();
+    final dbPath = '$dbDir/$_dbName';
+    try {
+      await db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (_) {}
+    await backupDatabaseFileAtomically(
+      dbPath,
+      targetPath: preRestoreBackupPathFor(dbPath),
+    );
+    final payload = await compute(
+      encodePreRestoreEnvelope,
+      (snapshot: snapshot, savedAt: DateTime.now().toIso8601String()),
+    );
+    await writeTextFileAtomically(
+      File(preRestoreJsonPathFor(dbPath)),
+      payload,
+      validateJson: true,
+    );
+  }
+
+  @override
+  Future<({ShopDataSnapshot snapshot, DateTime savedAt})?>
+      loadPreRestoreBackup() async {
+    final db = await _getDatabase();
+    if (db == null) {
+      return _legacyStorage.loadPreRestoreBackup();
+    }
+    try {
+      final dbDir = await getDatabasesPath();
+      final jsonFile = File(preRestoreJsonPathFor('$dbDir/$_dbName'));
+      if (await jsonFile.exists()) {
+        final raw = await jsonFile.readAsString();
+        if (raw.trim().isNotEmpty) {
+          return await compute(decodePreRestoreEnvelope, raw);
+        }
+      }
+    } catch (_) {}
+    return _legacyStorage.loadPreRestoreBackup();
   }
 
   Future<void> _saveInternal(ShopDataSnapshot snapshot) async {
@@ -611,10 +1045,12 @@ class SqliteInventoryStorage implements InventoryStorage {
         }
       }
 
-      // Product changes (5-year price & catalog history) diff
+      // Product changes (keep recent 90d in memory; preserve older rows in SQLite)
+      final nextChangeDates = <String, DateTime>{};
       for (final ch in snapshot.productChanges) {
         final payload = jsonEncode(ch.toJson());
         nextChanges[ch.id] = payload;
+        nextChangeDates[ch.id] = ch.createdAt;
         if (_savedChanges[ch.id] != payload) {
           batch.insert(
             'product_changes',
@@ -630,9 +1066,14 @@ class SqliteInventoryStorage implements InventoryStorage {
           );
         }
       }
+      final memoryCutoff = DateTime.now()
+          .subtract(const Duration(days: inMemoryChangeHistoryDays));
       for (final oldId in _savedChanges.keys) {
         if (!nextChanges.containsKey(oldId)) {
-          batch.delete('product_changes', where: 'id = ?', whereArgs: [oldId]);
+          final oldDt = _savedChangeDates[oldId];
+          if (oldDt != null && !oldDt.isBefore(memoryCutoff)) {
+            batch.delete('product_changes', where: 'id = ?', whereArgs: [oldId]);
+          }
         }
       }
 
@@ -648,6 +1089,9 @@ class SqliteInventoryStorage implements InventoryStorage {
       }
 
       await batch.commit(noResult: true);
+      _savedChangeDates
+        ..clear()
+        ..addAll(nextChangeDates);
     });
 
     _savedProducts

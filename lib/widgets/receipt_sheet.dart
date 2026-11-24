@@ -4,19 +4,23 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/sale.dart';
 import '../services/export_service.dart';
+import '../services/thermal_printer_service.dart';
 import '../state/shop_controller.dart';
 import 'formatters.dart';
 import 'receipt_barcode.dart';
+import 'thermal_printer_dialog.dart';
 
 class ReceiptSheet extends StatelessWidget {
   const ReceiptSheet({
     super.key,
     required this.controller,
     required this.sale,
+    this.onNewCustomer,
   });
 
   final ShopController controller;
   final Sale sale;
+  final VoidCallback? onNewCustomer;
 
   Future<void> _shareText(BuildContext context) async {
     final text = ExportService.buildSaleReceiptText(
@@ -263,7 +267,38 @@ class ReceiptSheet extends StatelessWidget {
             const SizedBox(height: 12),
             ReceiptBarcodeWidget(code: sale.receiptCode),
             const SizedBox(height: 16),
-            FilledButton.icon(
+            if (onNewCustomer != null) ...[
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  onNewCustomer!();
+                },
+                icon: const Icon(Icons.person_add_alt_1_outlined),
+                label: Text(strings.newCustomerBtn),
+              ),
+              const SizedBox(height: 8),
+            ],
+            FilledButton.tonalIcon(
+              onPressed: () => printBytesOrSetupPrinter(
+                context,
+                strings: strings,
+                shopName: controller.shopName,
+                buildBytes: (cfg) => ThermalPrinterService.buildReceiptEscPos(
+                  sale: sale,
+                  strings: strings,
+                  currency: controller.currency,
+                  is80mm: cfg.is80mm,
+                  shopName: controller.shopName,
+                  shopAddress: controller.shopAddress,
+                  shopPhone: controller.shopPhone,
+                  receiptFooter: controller.receiptFooter,
+                ),
+              ),
+              icon: const Icon(Icons.print_outlined),
+              label: Text(strings.thermalPrintBtn),
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
               onPressed: () => _shareText(context),
               icon: const Icon(Icons.share),
               label: Text(strings.shareWhatsAppBtn),
@@ -272,7 +307,7 @@ class ReceiptSheet extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: FilledButton.tonalIcon(
+                  child: OutlinedButton.icon(
                     onPressed: () => _sharePdf(context),
                     icon: const Icon(Icons.picture_as_pdf_outlined),
                     label: Text(
@@ -295,6 +330,32 @@ class ReceiptSheet extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () {
+                final res = controller.repeatSaleToCart(sale);
+                final messenger = ScaffoldMessenger.of(context);
+                Navigator.of(context).pop();
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      res.addedLines == 0
+                          ? strings.noAvailableItemsToRepeatMsg
+                          : (res.skippedCount > 0
+                              ? strings.orderRepeatedPartialMsg(
+                                  res.addedLines,
+                                  res.skippedCount,
+                                )
+                              : strings.orderRepeatedToCartMsg(
+                                  res.addedLines,
+                                )),
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.replay),
+              label: Text(strings.repeatOrderBtn),
             ),
           ],
         ),

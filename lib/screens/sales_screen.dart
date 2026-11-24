@@ -14,6 +14,7 @@ import '../widgets/invoices_history_sheet.dart';
 import '../widgets/receipt_barcode.dart';
 import '../widgets/receipt_sheet.dart';
 import '../widgets/settings_button.dart';
+import '../widgets/shift_closing_sheet.dart';
 import 'barcode_scanner_screen.dart';
 
 class SalesScreen extends StatefulWidget {
@@ -26,11 +27,13 @@ class SalesScreen extends StatefulWidget {
 }
 
 class _SalesScreenState extends State<SalesScreen> {
+  static const int _pageSize = 60;
   SalesDateFilter _filter = SalesDateFilter.today;
   bool _unpaidOnly = false;
   bool _returnsOnly = false;
   final _searchCtrl = TextEditingController();
   String _query = '';
+  int _visibleLimit = _pageSize;
 
   @override
   void dispose() {
@@ -109,6 +112,15 @@ class _SalesScreenState extends State<SalesScreen> {
     );
   }
 
+  void _openShiftClosingSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => ShiftClosingSheet(controller: widget.controller),
+    );
+  }
+
   Future<void> _showSaleDetails(Sale sale) async {
     final result = await showModalBottomSheet<String>(
       context: context,
@@ -121,12 +133,30 @@ class _SalesScreenState extends State<SalesScreen> {
     );
     if (!mounted) return;
     if (result == 'trashed') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.controller.strings.saleVoidedMsg)),
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 4),
+          content: Text(widget.controller.strings.saleVoidedMsg),
+          action: SnackBarAction(
+            label: widget.controller.strings.undoAction,
+            onPressed: () => widget.controller.restoreSaleFromTrash(sale.id),
+          ),
+        ),
       );
     } else if (result == 'archived') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.controller.strings.movedToArchiveMsg)),
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 4),
+          content: Text(widget.controller.strings.movedToArchiveMsg),
+          action: SnackBarAction(
+            label: widget.controller.strings.undoAction,
+            onPressed: () => widget.controller.unarchiveSale(sale.id),
+          ),
+        ),
       );
     }
   }
@@ -139,14 +169,15 @@ class _SalesScreenState extends State<SalesScreen> {
         final strings = widget.controller.strings;
         final currency = widget.controller.currency;
         final isCashier = widget.controller.cashierMode;
-        final periodSales = widget.controller.filteredSales(_filter);
+        final activeFilter = isCashier ? SalesDateFilter.today : _filter;
+        final periodSales = widget.controller.filteredSales(activeFilter);
         final returnsCount = periodSales.where((s) => s.hasReturn).length;
         final totalReturnsAmount = periodSales.fold(
           0.0,
           (sum, s) => sum + s.returnedMoneyTotal,
         );
         final allFilteredSales = widget.controller.filteredSales(
-          _filter,
+          activeFilter,
           unpaidOnly: _unpaidOnly,
           returnsOnly: _returnsOnly,
         );
@@ -195,12 +226,12 @@ class _SalesScreenState extends State<SalesScreen> {
         final profit = sales.fold(0.0, (sum, s) => sum + s.profit);
         final unpaidCount = widget.controller.unpaidSales.length;
         final totalDebt = widget.controller.totalUnpaidDebt;
-        final breakdown = widget.controller.paymentBreakdown(_filter);
+        final breakdown = widget.controller.paymentBreakdown(activeFilter);
 
         return Scaffold(
           resizeToAvoidBottomInset: false,
           appBar: AppBar(
-            title: Text(strings.salesAndProfit),
+            title: Text(isCashier ? strings.navSales : strings.salesAndProfit),
             actions: [
               IconButton(
                 tooltip: strings.customersBtn,
@@ -219,28 +250,36 @@ class _SalesScreenState extends State<SalesScreen> {
           ),
           body: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                child: SegmentedButton<SalesDateFilter>(
-                  showSelectedIcon: false,
-                  segments: [
-                    for (final option in SalesDateFilter.values)
-                      ButtonSegment(
-                        value: option,
-                        label: Text(
-                          _filterLabel(strings, option),
-                          maxLines: 1,
-                          softWrap: false,
-                          overflow: TextOverflow.ellipsis,
+              if (!isCashier)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: SegmentedButton<SalesDateFilter>(
+                    showSelectedIcon: false,
+                    segments: [
+                      for (final option in SalesDateFilter.values)
+                        ButtonSegment(
+                          value: option,
+                          label: Text(
+                            _filterLabel(strings, option),
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
-                  ],
-                  selected: {_filter},
-                  onSelectionChanged: (selection) {
-                    setState(() => _filter = selection.first);
-                  },
+                    ],
+                    selected: {_filter},
+                    onSelectionChanged: (selection) {
+                      final next = selection.first;
+                      setState(() {
+                        _filter = next;
+                        _visibleLimit = _pageSize;
+                      });
+                      if (next == SalesDateFilter.all) {
+                        widget.controller.ensureAllSalesLoaded();
+                      }
+                    },
+                  ),
                 ),
-              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
                 child: Row(
@@ -277,6 +316,15 @@ class _SalesScreenState extends State<SalesScreen> {
                             ),
                             const SizedBox(width: 8),
                             ActionChip(
+                              avatar: const Icon(
+                                Icons.point_of_sale_outlined,
+                                size: 18,
+                              ),
+                              label: Text(strings.shiftClosingBtn),
+                              onPressed: _openShiftClosingSheet,
+                            ),
+                            const SizedBox(width: 8),
+                            ActionChip(
                               avatar: const Icon(Icons.people_outline, size: 18),
                               label: Text(
                                 '${strings.debtorsSummaryBtn} (${widget.controller.debtors.length})',
@@ -291,24 +339,71 @@ class _SalesScreenState extends State<SalesScreen> {
                               ),
                               onPressed: _openCustomersSheet,
                             ),
-                            const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: const Icon(Icons.bar_chart_outlined, size: 18),
-                              label: Text(strings.analyticsBtn),
-                              onPressed: _openAnalyticsSheet,
-                            ),
-                            const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: const Icon(Icons.receipt_long_outlined, size: 18),
-                              label: Text(strings.invoiceHistoryTitle),
-                              onPressed: _openInvoicesHistorySheet,
-                            ),
-                            const SizedBox(width: 8),
-                            ActionChip(
-                              avatar: const Icon(Icons.report_problem_outlined, size: 18),
-                              label: Text(strings.defectReportBtn),
-                              onPressed: _openDefectReportSheet,
-                            ),
+                            if (!isCashier) ...[
+                              const SizedBox(width: 8),
+                              ActionChip(
+                                avatar: const Icon(
+                                  Icons.bar_chart_outlined,
+                                  size: 18,
+                                ),
+                                label: Text(strings.analyticsBtn),
+                                onPressed: _openAnalyticsSheet,
+                              ),
+                              const SizedBox(width: 8),
+                              PopupMenuButton<String>(
+                                onSelected: (value) {
+                                  if (value == 'invoices') {
+                                    _openInvoicesHistorySheet();
+                                  } else if (value == 'defects') {
+                                    _openDefectReportSheet();
+                                  }
+                                },
+                                itemBuilder: (_) => [
+                                  PopupMenuItem(
+                                    value: 'invoices',
+                                    child: ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: const Icon(
+                                        Icons.receipt_long_outlined,
+                                      ),
+                                      title: Text(strings.invoiceHistoryTitle),
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'defects',
+                                    child: ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: const Icon(
+                                        Icons.report_problem_outlined,
+                                      ),
+                                      title: Text(strings.defectReportBtn),
+                                    ),
+                                  ),
+                                ],
+                                child: IgnorePointer(
+                                  child: ActionChip(
+                                    avatar: const Icon(
+                                      Icons.summarize_outlined,
+                                      size: 18,
+                                    ),
+                                    label: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(strings.reportsBtn),
+                                        const SizedBox(width: 2),
+                                        const Icon(
+                                          Icons.arrow_drop_down,
+                                          size: 18,
+                                        ),
+                                      ],
+                                    ),
+                                    onPressed: () {},
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -378,9 +473,33 @@ class _SalesScreenState extends State<SalesScreen> {
                           ),
                         ],
                         const Divider(height: 16),
-                        Text(
-                          strings.cashRegisterTitle,
-                          style: Theme.of(context).textTheme.labelSmall,
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              strings.cashRegisterTitle,
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                            TextButton.icon(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              onPressed: _openShiftClosingSheet,
+                              icon: const Icon(
+                                Icons.point_of_sale_outlined,
+                                size: 16,
+                              ),
+                              label: Text(
+                                strings.shiftClosingBtn,
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 4),
                         Wrap(
@@ -470,30 +589,54 @@ class _SalesScreenState extends State<SalesScreen> {
                           ),
                         ),
                       )
-                    : ListView.separated(
-                        padding: EdgeInsets.fromLTRB(
-                          16,
-                          4,
-                          16,
-                          16 + MediaQuery.viewInsetsOf(context).bottom,
-                        ),
-                        itemCount: sales.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 8),
-                        itemBuilder: (context, index) {
-                          final sale = sales[index];
+                    : () {
+                        final displayedSales = sales.length > _visibleLimit
+                            ? sales.sublist(0, _visibleLimit)
+                            : sales;
+                        final remainingCount =
+                            sales.length - displayedSales.length;
+                        return ListView.separated(
+                          padding: EdgeInsets.fromLTRB(
+                            16,
+                            4,
+                            16,
+                            16 + MediaQuery.viewInsetsOf(context).bottom,
+                          ),
+                          itemCount: displayedSales.length +
+                              (remainingCount > 0 ? 1 : 0),
+                          separatorBuilder: (_, _) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            if (index >= displayedSales.length) {
+                              return OutlinedButton.icon(
+                                onPressed: () => setState(
+                                  () => _visibleLimit += _pageSize,
+                                ),
+                                icon: const Icon(Icons.expand_more),
+                                label: Text(
+                                  strings.showMoreCountBtn(remainingCount),
+                                ),
+                              );
+                            }
+                            final sale = displayedSales[index];
+                          final paymentLabel = sale.isSplitPayment
+                              ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)}'
+                              : strings.paymentMethodLabel(sale.paymentMethod.name);
+                          final actorOrPayment = sale.customerName.isNotEmpty
+                              ? sale.customerName
+                              : (sale.sellerName.isNotEmpty
+                                  ? '$paymentLabel • ${sale.sellerName}'
+                                  : paymentLabel);
                           final subtitleParts = [
-                            '№${sale.receiptCode}',
                             formatDateTime(sale.createdAt),
-                            sale.isSplitPayment
-                                ? '${strings.paymentMethodLabel(sale.paymentMethod.name)} + ${strings.paymentMethodLabel(sale.secondaryPaymentMethod!.name)}'
-                                : strings.paymentMethodLabel(sale.paymentMethod.name),
-                            strings.unitsShort(sale.totalUnits),
-                            if (sale.customerName.isNotEmpty) sale.customerName,
+                            actorOrPayment,
+                            strings.itemsShort(sale.items.length),
                           ];
 
                           return Card(
                             margin: EdgeInsets.zero,
                             child: ListTile(
+                              dense: true,
+                              visualDensity: VisualDensity.compact,
                               onTap: () => _showSaleDetails(sale),
                               title: Wrap(
                                 spacing: 6,
@@ -506,34 +649,31 @@ class _SalesScreenState extends State<SalesScreen> {
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: sale.isPaid
-                                          ? Colors.green.shade100
-                                          : Colors.amber.shade100,
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      sale.isPaid
-                                          ? strings.paidBadge
-                                          : strings.unpaidBadge(
-                                              formatMoney(
-                                                sale.remainingDebt,
-                                                currency,
-                                              ),
-                                            ),
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelSmall
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w600,
+                                  if (!sale.isPaid)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amber.shade100,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        strings.unpaidBadge(
+                                          formatMoney(
+                                            sale.remainingDebt,
+                                            currency,
                                           ),
+                                        ),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
                                     ),
-                                  ),
                                   if (sale.refundNote.isNotEmpty ||
                                       sale.refundedAmount > 0)
                                     Container(
@@ -562,33 +702,17 @@ class _SalesScreenState extends State<SalesScreen> {
                                     ),
                                 ],
                               ),
-                              subtitle: Text(subtitleParts.join(' • ')),
-                              trailing: isCashier
-                                  ? null
-                                  : Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
-                                      children: [
-                                        Text(
-                                          '+${formatMoney(sale.profit, currency)}',
-                                          style: TextStyle(
-                                            color: sale.profit >= 0
-                                                ? Colors.green.shade700
-                                                : Theme.of(context)
-                                                    .colorScheme
-                                                    .error,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        Text(strings.profitLabel),
-                                      ],
-                                    ),
+                              subtitle: Text(
+                                subtitleParts.join(' • '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: const Icon(Icons.chevron_right),
                             ),
                           );
-                        },
-                      ),
+                          },
+                        );
+                      }(),
               ),
             ],
           ),
@@ -696,6 +820,47 @@ class _SaleDetailSheet extends StatelessWidget {
     }
   }
 
+  Future<String?> _confirmOwnerPinForSaleAction(BuildContext context) async {
+    if (!controller.cashierMode) return '';
+    final strings = controller.strings;
+    if (!controller.hasOwnerPin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.ownerPinNotSetForDeleteMsg)),
+      );
+      return null;
+    }
+    final pinCtrl = TextEditingController();
+    final attempt = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(strings.ownerPinRequiredTitle),
+        content: TextField(
+          controller: pinCtrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          decoration: InputDecoration(
+            labelText: strings.enterPinHint,
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(pinCtrl.text),
+            child: Text(strings.confirm),
+          ),
+        ],
+      ),
+    );
+    pinCtrl.dispose();
+    return attempt;
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -743,6 +908,11 @@ class _SaleDetailSheet extends StatelessWidget {
                   formatDateTime(sale.createdAt),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                if (sale.sellerName.isNotEmpty)
+                  Text(
+                    strings.sellerLabel(sale.sellerName),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 if (sale.customerName.isNotEmpty)
                   Text(
                     strings.customerLabel(sale.customerName),
@@ -952,7 +1122,7 @@ class _SaleDetailSheet extends StatelessWidget {
                   icon: const Icon(Icons.swap_horiz),
                   label: Text(strings.changePaymentMethodAction),
                 ),
-                if (!isCashier && sale.items.isNotEmpty) ...[
+                if (sale.items.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
                     onPressed: () => _promptReturnOrExchange(context, sale),
@@ -996,44 +1166,84 @@ class _SaleDetailSheet extends StatelessWidget {
                     ],
                   ),
                 ],
-                if (!isCashier) ...[
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () async {
-                            await controller.archiveSale(sale.id);
-                            if (context.mounted) {
-                              Navigator.of(context).pop('archived');
-                            }
-                          },
-                          icon: const Icon(Icons.archive_outlined),
-                          label: Text(
-                            strings.archiveAction,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final pin = await _confirmOwnerPinForSaleAction(
+                            context,
+                          );
+                          if (pin == null || !context.mounted) return;
+                          final ok = await controller.archiveSale(
+                            sale.id,
+                            ownerPinAttempt: pin,
+                          );
+                          if (!context.mounted) return;
+                          if (ok) {
+                            Navigator.of(context).pop('archived');
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(strings.wrongPinMsg)),
+                            );
+                          }
+                        },
+                        icon: Icon(
+                          isCashier
+                              ? Icons.lock_outline
+                              : Icons.archive_outlined,
+                        ),
+                        label: Text(
+                          strings.archiveAction,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () async {
-                            await controller.moveSaleToTrash(sale.id);
-                            if (context.mounted) {
-                              Navigator.of(context).pop('trashed');
-                            }
-                          },
-                          icon: const Icon(Icons.delete_outline),
-                          label: Text(
-                            strings.moveToTrashAction,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final pin = await _confirmOwnerPinForSaleAction(
+                            context,
+                          );
+                          if (pin == null || !context.mounted) return;
+                          final ok = await controller.moveSaleToTrash(
+                            sale.id,
+                            ownerPinAttempt: pin,
+                          );
+                          if (!context.mounted) return;
+                          if (ok) {
+                            Navigator.of(context).pop('trashed');
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(strings.wrongPinMsg)),
+                            );
+                          }
+                        },
+                        icon: Icon(
+                          isCashier
+                              ? Icons.lock_outline
+                              : Icons.delete_outline,
+                        ),
+                        label: Text(
+                          strings.moveToTrashAction,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                    ],
+                    ),
+                  ],
+                ),
+                if (isCashier) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    strings.cashierReceiptImmutableNote,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                    textAlign: TextAlign.center,
                   ),
                 ],
               ],
@@ -1343,8 +1553,8 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
   bool _isExchange = false;
   bool _returnToStock = true;
   late PaymentMethod _settlementMethod;
-  late final Map<String, int> _returnQty;
-  final Map<String, int> _exchangeQty = {};
+  late final Map<String, double> _returnQty;
+  final Map<String, double> _exchangeQty = {};
   final Map<String, double> _exchangePrices = {};
   final _refundAmountCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
@@ -1428,7 +1638,7 @@ class _ReturnExchangeDialogState extends State<_ReturnExchangeDialog> {
           _refundAmountCtrl.text.trim().replaceAll(',', '.'),
         ) ??
         0.0;
-    final exchangeList = <({Product product, int quantity, double? customUnitPrice})>[];
+    final exchangeList = <({Product product, double quantity, double? customUnitPrice})>[];
     if (_isExchange) {
       for (final entry in _exchangeQty.entries) {
         if (entry.value <= 0) continue;

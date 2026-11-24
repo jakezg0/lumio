@@ -181,10 +181,72 @@ class _AnalyticsSheetState extends State<AnalyticsSheet> {
     final theme = Theme.of(context);
     final topProducts = widget.controller.topSellingProducts(_filter);
     final slowMovers = widget.controller.slowMovingProducts(_filter);
+    final activeProducts = widget.controller.products;
+    final mostExpensive = activeProducts.isEmpty
+        ? null
+        : activeProducts.reduce((a, b) => a.sellPrice >= b.sellPrice ? a : b);
+    final cheapest = activeProducts.isEmpty
+        ? null
+        : activeProducts.reduce((a, b) => a.sellPrice <= b.sellPrice ? a : b);
+    final mostStock = activeProducts.isEmpty
+        ? null
+        : activeProducts.reduce((a, b) => a.stock >= b.stock ? a : b);
+    final highestMargin = activeProducts.isEmpty
+        ? null
+        : activeProducts
+            .reduce((a, b) => a.marginPercent >= b.marginPercent ? a : b);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (activeProducts.isNotEmpty) ...[
+          Row(
+            children: [
+              Expanded(
+                child: _HighlightBox(
+                  title: strings.highlightMostExpensive,
+                  headline: mostExpensive!.name,
+                  subtitle: formatMoney(mostExpensive.sellPrice, currency),
+                  color: theme.colorScheme.primaryContainer,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _HighlightBox(
+                  title: strings.highlightCheapest,
+                  headline: cheapest!.name,
+                  subtitle: formatMoney(cheapest.sellPrice, currency),
+                  color: theme.colorScheme.secondaryContainer,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (!hideProfit) ...[
+                Expanded(
+                  child: _HighlightBox(
+                    title: strings.highlightHighestMargin,
+                    headline: highestMargin!.name,
+                    subtitle: '${highestMargin.marginPercent.toStringAsFixed(0)}%',
+                    color: theme.colorScheme.tertiaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: _HighlightBox(
+                  title: strings.highlightMostStock,
+                  headline: mostStock!.name,
+                  subtitle: strings.unitsCount(mostStock.stock),
+                  color: theme.colorScheme.surfaceContainerHighest,
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 20),
+        ],
         Text(
           strings.topSellingHeader,
           style: theme.textTheme.titleSmall,

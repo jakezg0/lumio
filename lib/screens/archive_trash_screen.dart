@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../models/expense.dart';
 import '../models/product.dart';
+import '../models/sale.dart';
 import '../state/shop_controller.dart';
 import '../widgets/formatters.dart';
+import '../widgets/pin_confirm_dialog.dart';
 
 class ArchiveTrashScreen extends StatefulWidget {
   const ArchiveTrashScreen({super.key, required this.controller});
@@ -24,6 +27,7 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
     super.initState();
     _tabController = TabController(length: 2, vsync: this)
       ..addListener(_handleTabChange);
+    widget.controller.ensureArchiveAndTrashLoaded();
   }
 
   @override
@@ -70,25 +74,15 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
 
   Future<void> _confirmEmptyTrash(BuildContext context) async {
     final strings = widget.controller.strings;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(strings.emptyTrashTitle),
-        content: Text(strings.emptyTrashBody),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(strings.cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(strings.emptyTrashAction),
-          ),
-        ],
-      ),
+    final pin = await showPinProtectedDeleteDialog(
+      context,
+      controller: widget.controller,
+      title: strings.emptyTrashTitle,
+      body: strings.emptyTrashBody,
+      confirmLabel: strings.emptyTrashAction,
     );
-    if (confirmed == true) {
-      await widget.controller.emptyTrash();
+    if (pin != null) {
+      await widget.controller.emptyTrash(ownerPinAttempt: pin);
     }
   }
 
@@ -120,8 +114,62 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
 
   Future<void> _deleteSelectedTrashForever() async {
     if (_selectedIds.isEmpty) return;
+    final strings = widget.controller.strings;
+    final pin = await showPinProtectedDeleteDialog(
+      context,
+      controller: widget.controller,
+      title: strings.deleteForeverConfirmTitle,
+      body: strings.deleteForeverSelectedBody(_selectedIds.length),
+      confirmLabel: strings.deleteForeverAction,
+    );
+    if (pin == null) return;
     await widget.controller.deleteTrashedProductsPermanently(_selectedIds);
     _exitSelectionMode();
+  }
+
+  Future<void> _deleteProductForever(Product product) async {
+    final strings = widget.controller.strings;
+    final pin = await showPinProtectedDeleteDialog(
+      context,
+      controller: widget.controller,
+      title: strings.deleteForeverConfirmTitle,
+      body: strings.deleteForeverItemBody(product.name),
+      confirmLabel: strings.deleteForeverAction,
+    );
+    if (pin == null) return;
+    await widget.controller.deleteProductPermanently(product.id);
+  }
+
+  Future<void> _deleteSaleForever(Sale sale) async {
+    final strings = widget.controller.strings;
+    final currency = widget.controller.currency;
+    final pin = await showPinProtectedDeleteDialog(
+      context,
+      controller: widget.controller,
+      title: strings.deleteForeverConfirmTitle,
+      body: strings.deleteForeverItemBody(
+        '${strings.saleReceipt} (${formatMoney(sale.total, currency)})',
+      ),
+      confirmLabel: strings.deleteForeverAction,
+    );
+    if (pin == null) return;
+    await widget.controller.deleteSalePermanently(
+      sale.id,
+      ownerPinAttempt: pin,
+    );
+  }
+
+  Future<void> _deleteExpenseForever(Expense expense) async {
+    final strings = widget.controller.strings;
+    final pin = await showPinProtectedDeleteDialog(
+      context,
+      controller: widget.controller,
+      title: strings.deleteForeverConfirmTitle,
+      body: strings.deleteForeverItemBody(expense.title),
+      confirmLabel: strings.deleteForeverAction,
+    );
+    if (pin == null) return;
+    await widget.controller.deleteExpensePermanently(expense.id);
   }
 
   Future<void> _restoreSelectedArchive() async {
@@ -396,8 +444,8 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
                                         items.map((p) => p.id).toList();
                                     final allFolderSelected = itemIds.isNotEmpty &&
                                         itemIds.every(_selectedIds.contains);
-                                    final totalUnits = items.fold<int>(
-                                      0,
+                                    final totalUnits = items.fold<double>(
+                                      0.0,
                                       (sum, p) => sum + p.stock,
                                     );
                                     return Card(
@@ -703,10 +751,100 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
               (trashedProducts.isEmpty &&
                       trashedSales.isEmpty &&
                       trashedExpenses.isEmpty)
-                  ? Center(child: Text(strings.trashEmpty))
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(strings.trashEmpty),
+                            const SizedBox(height: 12),
+                            Text(
+                              widget.controller.trashRetentionDays > 0
+                                  ? strings.trashAutoPurgeNotice(
+                                      widget.controller.trashRetentionDays,
+                                    )
+                                  : strings.trashAutoPurgeOffNotice,
+                              style: Theme.of(context).textTheme.bodySmall,
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
                   : ListView(
                       padding: const EdgeInsets.all(16),
                       children: [
+                        Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest
+                              .withValues(alpha: 0.6),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.auto_delete_outlined,
+                                  size: 18,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    widget.controller.trashRetentionDays > 0
+                                        ? strings.trashAutoPurgeNotice(
+                                            widget.controller.trashRetentionDays,
+                                          )
+                                        : strings.trashAutoPurgeOffNotice,
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                ),
+                                if (!widget.controller.cashierMode)
+                                  PopupMenuButton<int>(
+                                    tooltip: strings.trashRetentionLabel,
+                                    onSelected: (days) async {
+                                      await widget.controller
+                                          .setTrashRetentionDays(days);
+                                    },
+                                    itemBuilder: (_) => [
+                                      for (final d in [30, 45, 60])
+                                        PopupMenuItem<int>(
+                                          value: d,
+                                          child: Text(
+                                            strings.trashRetentionDaysOption(d),
+                                          ),
+                                        ),
+                                      PopupMenuItem<int>(
+                                        value: 0,
+                                        child: Text(
+                                          strings.trashRetentionOffOption,
+                                        ),
+                                      ),
+                                    ],
+                                    child: Chip(
+                                      visualDensity: VisualDensity.compact,
+                                      label: Text(
+                                        widget.controller.trashRetentionDays > 0
+                                            ? strings.trashRetentionDaysOption(
+                                                widget.controller
+                                                    .trashRetentionDays,
+                                              )
+                                            : strings.trashRetentionOffOption,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
                         if (trashedProducts.isNotEmpty) ...[
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -746,9 +884,15 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
                                     ? null
                                     : () => _enterSelectionMode(product.id),
                                 title: Text(product.name),
-                                subtitle: Text(
-                                  '${product.category} • ${formatMoney(product.sellPrice, currency)} • ${strings.stockCountLabel(product.stock)}',
-                                ),
+                                subtitle: Text(() {
+                                  final daysLeft = widget.controller
+                                      .daysUntilAutoPurge(product.trashedAt);
+                                  final base =
+                                      '${product.category} • ${formatMoney(product.sellPrice, currency)} • ${strings.stockCountLabel(product.stock)}';
+                                  return daysLeft == null
+                                      ? base
+                                      : '$base • ${strings.autoPurgeInDays(daysLeft)}';
+                                }()),
                                 trailing: _selectionMode
                                     ? null
                                     : Wrap(
@@ -801,10 +945,8 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
                                           IconButton(
                                             tooltip:
                                                 strings.deleteForeverAction,
-                                            onPressed: () => widget.controller
-                                                .deleteProductPermanently(
-                                              product.id,
-                                            ),
+                                            onPressed: () =>
+                                                _deleteProductForever(product),
                                             icon: const Icon(
                                               Icons.delete_forever_outlined,
                                             ),
@@ -871,8 +1013,7 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
                                     ),
                                     IconButton(
                                       tooltip: strings.deleteForeverAction,
-                                      onPressed: () => widget.controller
-                                          .deleteSalePermanently(sale.id),
+                                      onPressed: () => _deleteSaleForever(sale),
                                       icon: const Icon(
                                         Icons.delete_forever_outlined,
                                       ),
@@ -923,8 +1064,8 @@ class _ArchiveTrashScreenState extends State<ArchiveTrashScreen>
                                     ),
                                     IconButton(
                                       tooltip: strings.deleteForeverAction,
-                                      onPressed: () => widget.controller
-                                          .deleteExpensePermanently(expense.id),
+                                      onPressed: () =>
+                                          _deleteExpenseForever(expense),
                                       icon: const Icon(
                                         Icons.delete_forever_outlined,
                                       ),

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show compute;
 
+import '../models/cash_drawer_movement.dart';
 import '../models/customer.dart';
 import '../models/expense.dart';
 import '../models/product.dart';
@@ -23,7 +24,7 @@ class InventoryValueSnapshot {
   final String monthKey;
   final DateTime capturedAt;
   final int productsCount;
-  final int totalUnits;
+  final double totalUnits;
   final double costValue;
   final double sellValue;
 
@@ -63,7 +64,7 @@ class InventoryValueSnapshot {
       monthKey: key,
       capturedAt: captured,
       productsCount: (json['productsCount'] as num?)?.toInt() ?? 0,
-      totalUnits: (json['totalUnits'] as num?)?.toInt() ?? 0,
+      totalUnits: (json['totalUnits'] as num?)?.toDouble() ?? 0.0,
       costValue: (json['costValue'] as num?)?.toDouble() ?? 0.0,
       sellValue: (json['sellValue'] as num?)?.toDouble() ?? 0.0,
     );
@@ -120,12 +121,26 @@ class ShopDataSnapshot {
     this.productChanges = const [],
     this.negativeStockReminders = const {},
     this.allowNegativeStock = true,
+    this.allowCashierDiscounts = true,
     this.autoBackupEnabled = true,
     this.lastAutoBackupAt = '',
+    this.lastExternalBackupAt = '',
+    this.lastExternalBackupReminderAt = '',
+    this.lastCloudBackupProductsCount = -1,
+    this.lastCloudBackupSalesCount = -1,
+    this.pendingSync = false,
     this.cloudBackupHashes = const {},
     this.sheetCatalogBaseline = const {},
     this.inventorySnapshots = const [],
     this.featureUsage = const {},
+    this.trashRetentionDays = 30,
+    this.inventorySelectedCategory = '',
+    this.inventorySort = 'newest',
+    this.posSelectedCategory = '',
+    this.sellers = const [],
+    this.activeSeller = '',
+    this.priceTagQueue = const [],
+    this.cashDrawerMovements = const [],
   });
 
   final List<Product> products;
@@ -153,17 +168,135 @@ class ShopDataSnapshot {
   final List<ProductChangeEntry> productChanges;
   final Map<String, int> negativeStockReminders;
   final bool allowNegativeStock;
+  final bool allowCashierDiscounts;
   final bool autoBackupEnabled;
   final String lastAutoBackupAt;
+  final String lastExternalBackupAt;
+  final String lastExternalBackupReminderAt;
+  final int lastCloudBackupProductsCount;
+  final int lastCloudBackupSalesCount;
+  final bool pendingSync;
   final Map<String, String> cloudBackupHashes;
   final Map<String, String> sheetCatalogBaseline;
   final List<InventoryValueSnapshot> inventorySnapshots;
   final Map<String, FeatureUsageStat> featureUsage;
+  final int trashRetentionDays;
+  final String inventorySelectedCategory;
+  final String inventorySort;
+  final String posSelectedCategory;
+  final List<String> sellers;
+  final String activeSeller;
+  final List<String> priceTagQueue;
+  final List<CashDrawerMovement> cashDrawerMovements;
 }
 
 abstract class InventoryStorage {
   Future<ShopDataSnapshot> load();
   Future<void> save(ShopDataSnapshot snapshot);
+  Future<void> savePreRestoreBackup(ShopDataSnapshot snapshot);
+  Future<({ShopDataSnapshot snapshot, DateTime savedAt})?>
+      loadPreRestoreBackup();
+  Future<List<ProductChangeEntry>> loadProductChanges({
+    int? days,
+    String? productId,
+    bool priceOnly = false,
+  });
+  Future<int> deleteProductChanges({int? olderThanDays});
+  Future<({List<Product> products, List<Sale> sales, List<Expense> expenses})>
+      loadArchiveAndTrash();
+  Future<List<Sale>> loadAllActiveSales();
+}
+
+List<ProductChangeEntry> filterProductChangesList(
+  List<ProductChangeEntry> source, {
+  int? days,
+  String? productId,
+  bool priceOnly = false,
+}) {
+  final cutoff = (days != null && days > 0)
+      ? DateTime.now().subtract(Duration(days: days))
+      : null;
+  final result = source.where((e) {
+    if (cutoff != null && e.createdAt.isBefore(cutoff)) return false;
+    if (productId != null && productId.isNotEmpty && e.productId != productId) {
+      return false;
+    }
+    if (priceOnly && !e.hasKind('price')) return false;
+    return true;
+  }).toList();
+  result.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  return result;
+}
+
+ShopDataSnapshot _copySnapshotWithProductChanges(
+  ShopDataSnapshot s,
+  List<ProductChangeEntry> productChanges,
+) {
+  return ShopDataSnapshot(
+    products: s.products,
+    sales: s.sales,
+    expenses: s.expenses,
+    customers: s.customers,
+    stockIns: s.stockIns,
+    languageCode: s.languageCode,
+    currencyCode: s.currencyCode,
+    shopName: s.shopName,
+    shopAddress: s.shopAddress,
+    shopPhone: s.shopPhone,
+    receiptFooter: s.receiptFooter,
+    ownerPin: s.ownerPin,
+    useBiometricUnlock: s.useBiometricUnlock,
+    cashierMode: s.cashierMode,
+    catalogSeeded: s.catalogSeeded,
+    googleSheetsUrl: s.googleSheetsUrl,
+    googleSheetsSecret: s.googleSheetsSecret,
+    customCategories: s.customCategories,
+    hiddenCustomerSuggestions: s.hiddenCustomerSuggestions,
+    stockInDraft: s.stockInDraft,
+    stocktakeDraft: s.stocktakeDraft,
+    heldSales: s.heldSales,
+    productChanges: productChanges,
+    negativeStockReminders: s.negativeStockReminders,
+    allowNegativeStock: s.allowNegativeStock,
+    allowCashierDiscounts: s.allowCashierDiscounts,
+    autoBackupEnabled: s.autoBackupEnabled,
+    lastAutoBackupAt: s.lastAutoBackupAt,
+    lastExternalBackupAt: s.lastExternalBackupAt,
+    lastExternalBackupReminderAt: s.lastExternalBackupReminderAt,
+    lastCloudBackupProductsCount: s.lastCloudBackupProductsCount,
+    lastCloudBackupSalesCount: s.lastCloudBackupSalesCount,
+    pendingSync: s.pendingSync,
+    cloudBackupHashes: s.cloudBackupHashes,
+    sheetCatalogBaseline: s.sheetCatalogBaseline,
+    inventorySnapshots: s.inventorySnapshots,
+    featureUsage: s.featureUsage,
+    trashRetentionDays: s.trashRetentionDays,
+    inventorySelectedCategory: s.inventorySelectedCategory,
+    inventorySort: s.inventorySort,
+    posSelectedCategory: s.posSelectedCategory,
+    sellers: s.sellers,
+    activeSeller: s.activeSeller,
+    priceTagQueue: s.priceTagQueue,
+    cashDrawerMovements: s.cashDrawerMovements,
+  );
+}
+
+ShopDataSnapshot _mergeOlderProductChanges(
+  ShopDataSnapshot next,
+  List<ProductChangeEntry> existingChanges, {
+  int inMemoryDays = 90,
+}) {
+  if (existingChanges.isEmpty) return next;
+  final cutoff = DateTime.now().subtract(Duration(days: inMemoryDays));
+  final nextIds = next.productChanges.map((e) => e.id).toSet();
+  final preservedOld = existingChanges
+      .where((e) => e.createdAt.isBefore(cutoff) && !nextIds.contains(e.id))
+      .toList();
+  if (preservedOld.isEmpty) return next;
+  return _copySnapshotWithProductChanges(
+    next,
+    [...next.productChanges, ...preservedOld],
+  );
 }
 
 class InMemoryInventoryStorage implements InventoryStorage {
@@ -174,13 +307,108 @@ class InMemoryInventoryStorage implements InventoryStorage {
     customers: [],
     stockIns: [],
   );
+  ({ShopDataSnapshot snapshot, DateTime savedAt})? _preRestoreBackup;
 
   @override
   Future<ShopDataSnapshot> load() async => _snapshot;
 
   @override
   Future<void> save(ShopDataSnapshot snapshot) async {
-    _snapshot = snapshot;
+    _snapshot = _mergeOlderProductChanges(snapshot, _snapshot.productChanges);
+  }
+
+  @override
+  Future<void> savePreRestoreBackup(ShopDataSnapshot snapshot) async {
+    _preRestoreBackup = (snapshot: snapshot, savedAt: DateTime.now());
+  }
+
+  @override
+  Future<({ShopDataSnapshot snapshot, DateTime savedAt})?>
+      loadPreRestoreBackup() async => _preRestoreBackup;
+
+  @override
+  Future<({List<Product> products, List<Sale> sales, List<Expense> expenses})>
+      loadArchiveAndTrash() async => (
+        products: _snapshot.products.where((p) => !p.isActive).toList(),
+        sales: _snapshot.sales.where((s) => !s.isActive).toList(),
+        expenses: _snapshot.expenses.where((e) => e.isTrashed).toList(),
+      );
+
+  @override
+  Future<List<Sale>> loadAllActiveSales() async =>
+      _snapshot.sales.where((s) => s.isActive).toList();
+
+  @override
+  Future<List<ProductChangeEntry>> loadProductChanges({
+    int? days,
+    String? productId,
+    bool priceOnly = false,
+  }) async {
+    return filterProductChangesList(
+      _snapshot.productChanges,
+      days: days,
+      productId: productId,
+      priceOnly: priceOnly,
+    );
+  }
+
+  @override
+  Future<int> deleteProductChanges({int? olderThanDays}) async {
+    final before = _snapshot.productChanges.length;
+    if (before == 0) return 0;
+    final List<ProductChangeEntry> remaining;
+    if (olderThanDays == null) {
+      remaining = const [];
+    } else {
+      final cutoff = DateTime.now().subtract(Duration(days: olderThanDays));
+      remaining = _snapshot.productChanges
+          .where((e) => !e.createdAt.isBefore(cutoff))
+          .toList();
+    }
+    final removed = before - remaining.length;
+    if (removed > 0) {
+      _snapshot = ShopDataSnapshot(
+        products: _snapshot.products,
+        sales: _snapshot.sales,
+        expenses: _snapshot.expenses,
+        customers: _snapshot.customers,
+        stockIns: _snapshot.stockIns,
+        languageCode: _snapshot.languageCode,
+        currencyCode: _snapshot.currencyCode,
+        shopName: _snapshot.shopName,
+        shopAddress: _snapshot.shopAddress,
+        shopPhone: _snapshot.shopPhone,
+        receiptFooter: _snapshot.receiptFooter,
+        ownerPin: _snapshot.ownerPin,
+        useBiometricUnlock: _snapshot.useBiometricUnlock,
+        cashierMode: _snapshot.cashierMode,
+        catalogSeeded: _snapshot.catalogSeeded,
+        googleSheetsUrl: _snapshot.googleSheetsUrl,
+        googleSheetsSecret: _snapshot.googleSheetsSecret,
+        customCategories: _snapshot.customCategories,
+        hiddenCustomerSuggestions: _snapshot.hiddenCustomerSuggestions,
+        stockInDraft: _snapshot.stockInDraft,
+        stocktakeDraft: _snapshot.stocktakeDraft,
+        heldSales: _snapshot.heldSales,
+        productChanges: remaining,
+        negativeStockReminders: _snapshot.negativeStockReminders,
+        allowNegativeStock: _snapshot.allowNegativeStock,
+        allowCashierDiscounts: _snapshot.allowCashierDiscounts,
+        autoBackupEnabled: _snapshot.autoBackupEnabled,
+        lastAutoBackupAt: _snapshot.lastAutoBackupAt,
+        lastExternalBackupAt: _snapshot.lastExternalBackupAt,
+        lastExternalBackupReminderAt: _snapshot.lastExternalBackupReminderAt,
+        lastCloudBackupProductsCount: _snapshot.lastCloudBackupProductsCount,
+        lastCloudBackupSalesCount: _snapshot.lastCloudBackupSalesCount,
+        pendingSync: _snapshot.pendingSync,
+        cloudBackupHashes: _snapshot.cloudBackupHashes,
+        sheetCatalogBaseline: _snapshot.sheetCatalogBaseline,
+        inventorySnapshots: _snapshot.inventorySnapshots,
+        featureUsage: _snapshot.featureUsage,
+        trashRetentionDays: _snapshot.trashRetentionDays,
+      );
+    }
+    return removed;
   }
 }
 
@@ -189,6 +417,7 @@ class JsonFileInventoryStorage implements InventoryStorage {
 
   final String? _customFilePath;
   File? _cachedFile;
+  List<ProductChangeEntry> _archivedProductChanges = const [];
 
   String _androidPackageName() {
     try {
@@ -259,37 +488,209 @@ class JsonFileInventoryStorage implements InventoryStorage {
     try {
       final file = _resolveFile();
       if (!await file.exists()) {
+        _archivedProductChanges = const [];
         return const ShopDataSnapshot(products: [], sales: [], expenses: []);
       }
       final raw = await file.readAsString();
       if (raw.trim().isEmpty) {
+        _archivedProductChanges = const [];
         return const ShopDataSnapshot(products: [], sales: [], expenses: []);
       }
-      return await compute(_decodeSnapshotFromRawJson, raw);
+      final snapshot = await compute(_decodeSnapshotFromRawJson, raw);
+      final cutoff = DateTime.now().subtract(const Duration(days: 90));
+      _archivedProductChanges = snapshot.productChanges
+          .where((e) => e.createdAt.isBefore(cutoff))
+          .toList();
+      return snapshot;
     } catch (_) {
       return const ShopDataSnapshot(products: [], sales: [], expenses: []);
     }
   }
 
+  File _resolvePreRestoreFile() {
+    final mainFile = _resolveFile();
+    final path = mainFile.path;
+    if (path.endsWith('.json')) {
+      return File('${path.substring(0, path.length - 5)}_pre_restore.json');
+    }
+    return File('${path}_pre_restore.json');
+  }
+
   @override
   Future<void> save(ShopDataSnapshot snapshot) async {
     try {
+      final merged = _mergeOlderProductChanges(snapshot, _archivedProductChanges);
+      final cutoff = DateTime.now().subtract(const Duration(days: 90));
+      _archivedProductChanges = merged.productChanges
+          .where((e) => e.createdAt.isBefore(cutoff))
+          .toList();
       final file = _resolveFile();
-      final parent = file.parent;
-      if (!await parent.exists()) {
-        await parent.create(recursive: true);
-      }
-      final payload = await compute(_encodeSnapshotToJson, snapshot);
-      try {
-        final tmpFile = File('${file.path}.tmp');
-        await tmpFile.writeAsString(payload, flush: true);
-        await tmpFile.rename(file.path);
-      } catch (_) {
-        await file.writeAsString(payload, flush: true);
-      }
+      final payload = await compute(_encodeSnapshotToJson, merged);
+      await writeTextFileAtomically(file, payload, validateJson: true);
     } catch (_) {
-      // Ignore write failures in restricted environments.
+      // Preserve the previous valid file on write/verification failure.
     }
+  }
+
+  @override
+  Future<void> savePreRestoreBackup(ShopDataSnapshot snapshot) async {
+    final file = _resolvePreRestoreFile();
+    final payload = await compute(
+      _encodePreRestoreEnvelope,
+      (snapshot: snapshot, savedAt: DateTime.now().toIso8601String()),
+    );
+    await writeTextFileAtomically(file, payload, validateJson: true);
+  }
+
+  @override
+  Future<List<ProductChangeEntry>> loadProductChanges({
+    int? days,
+    String? productId,
+    bool priceOnly = false,
+  }) async {
+    final snapshot = await load();
+    return filterProductChangesList(
+      snapshot.productChanges,
+      days: days,
+      productId: productId,
+      priceOnly: priceOnly,
+    );
+  }
+
+  @override
+  Future<int> deleteProductChanges({int? olderThanDays}) async {
+    final snapshot = await load();
+    final before = snapshot.productChanges.length;
+    if (before == 0) return 0;
+    final List<ProductChangeEntry> remaining;
+    if (olderThanDays == null) {
+      remaining = const [];
+    } else {
+      final cutoff = DateTime.now().subtract(Duration(days: olderThanDays));
+      remaining = snapshot.productChanges
+          .where((e) => !e.createdAt.isBefore(cutoff))
+          .toList();
+    }
+    final removed = before - remaining.length;
+    if (removed > 0) {
+      final cutoff = DateTime.now().subtract(const Duration(days: 90));
+      _archivedProductChanges = remaining
+          .where((e) => e.createdAt.isBefore(cutoff))
+          .toList();
+      await save(
+        ShopDataSnapshot(
+          products: snapshot.products,
+          sales: snapshot.sales,
+          expenses: snapshot.expenses,
+          customers: snapshot.customers,
+          stockIns: snapshot.stockIns,
+          languageCode: snapshot.languageCode,
+          currencyCode: snapshot.currencyCode,
+          shopName: snapshot.shopName,
+          shopAddress: snapshot.shopAddress,
+          shopPhone: snapshot.shopPhone,
+          receiptFooter: snapshot.receiptFooter,
+          ownerPin: snapshot.ownerPin,
+          useBiometricUnlock: snapshot.useBiometricUnlock,
+          cashierMode: snapshot.cashierMode,
+          catalogSeeded: snapshot.catalogSeeded,
+          googleSheetsUrl: snapshot.googleSheetsUrl,
+          googleSheetsSecret: snapshot.googleSheetsSecret,
+          customCategories: snapshot.customCategories,
+          hiddenCustomerSuggestions: snapshot.hiddenCustomerSuggestions,
+          stockInDraft: snapshot.stockInDraft,
+          stocktakeDraft: snapshot.stocktakeDraft,
+          heldSales: snapshot.heldSales,
+          productChanges: remaining,
+          negativeStockReminders: snapshot.negativeStockReminders,
+          allowNegativeStock: snapshot.allowNegativeStock,
+          allowCashierDiscounts: snapshot.allowCashierDiscounts,
+          autoBackupEnabled: snapshot.autoBackupEnabled,
+          lastAutoBackupAt: snapshot.lastAutoBackupAt,
+          lastExternalBackupAt: snapshot.lastExternalBackupAt,
+          lastExternalBackupReminderAt: snapshot.lastExternalBackupReminderAt,
+          lastCloudBackupProductsCount: snapshot.lastCloudBackupProductsCount,
+          lastCloudBackupSalesCount: snapshot.lastCloudBackupSalesCount,
+          pendingSync: snapshot.pendingSync,
+          cloudBackupHashes: snapshot.cloudBackupHashes,
+          sheetCatalogBaseline: snapshot.sheetCatalogBaseline,
+          inventorySnapshots: snapshot.inventorySnapshots,
+          featureUsage: snapshot.featureUsage,
+          trashRetentionDays: snapshot.trashRetentionDays,
+        ),
+      );
+    }
+    return removed;
+  }
+
+  @override
+  Future<({ShopDataSnapshot snapshot, DateTime savedAt})?>
+      loadPreRestoreBackup() async {
+    try {
+      final file = _resolvePreRestoreFile();
+      if (!await file.exists()) return null;
+      final raw = await file.readAsString();
+      if (raw.trim().isEmpty) return null;
+      return await compute(decodePreRestoreEnvelope, raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<({List<Product> products, List<Sale> sales, List<Expense> expenses})>
+      loadArchiveAndTrash() async {
+    final snapshot = await load();
+    return (
+      products: snapshot.products.where((p) => !p.isActive).toList(),
+      sales: snapshot.sales.where((s) => !s.isActive).toList(),
+      expenses: snapshot.expenses.where((e) => e.isTrashed).toList(),
+    );
+  }
+
+  @override
+  Future<List<Sale>> loadAllActiveSales() async {
+    final snapshot = await load();
+    return snapshot.sales.where((s) => s.isActive).toList();
+  }
+}
+
+/// Atomically writes [content] via a `.tmp` sibling, verifies readback (and JSON
+/// validity when [validateJson] is true), and only then replaces [targetFile].
+Future<void> writeTextFileAtomically(
+  File targetFile,
+  String content, {
+  bool validateJson = false,
+}) async {
+  final parent = targetFile.parent;
+  if (!await parent.exists()) {
+    await parent.create(recursive: true);
+  }
+  final tmpFile = File('${targetFile.path}.tmp');
+  try {
+    await tmpFile.writeAsString(content, flush: true);
+    final readBack = await tmpFile.readAsString();
+    if (readBack != content) {
+      throw const FileSystemException(
+        'Atomic write verification failed: content mismatch',
+      );
+    }
+    if (validateJson) {
+      final decoded = jsonDecode(readBack);
+      if (decoded is! Map && decoded is! List) {
+        throw const FormatException(
+          'Atomic JSON verification failed: root is not an object or array',
+        );
+      }
+    }
+    await tmpFile.rename(targetFile.path);
+  } catch (_) {
+    try {
+      if (await tmpFile.exists()) {
+        await tmpFile.delete();
+      }
+    } catch (_) {}
+    rethrow;
   }
 }
 
@@ -363,8 +764,17 @@ ShopDataSnapshot _decodeSnapshotFromRawJson(String raw) {
             .map((k, v) => MapEntry(k, (v as num?)?.toInt() ?? 0))
           ..removeWhere((_, v) => v <= 0),
     allowNegativeStock: (decoded['allowNegativeStock'] as bool?) ?? true,
+    allowCashierDiscounts: (decoded['allowCashierDiscounts'] as bool?) ?? true,
     autoBackupEnabled: (decoded['autoBackupEnabled'] as bool?) ?? true,
     lastAutoBackupAt: (decoded['lastAutoBackupAt'] as String?) ?? '',
+    lastExternalBackupAt: (decoded['lastExternalBackupAt'] as String?) ?? '',
+    lastExternalBackupReminderAt:
+        (decoded['lastExternalBackupReminderAt'] as String?) ?? '',
+    lastCloudBackupProductsCount:
+        (decoded['lastCloudBackupProductsCount'] as num?)?.toInt() ?? -1,
+    lastCloudBackupSalesCount:
+        (decoded['lastCloudBackupSalesCount'] as num?)?.toInt() ?? -1,
+    pendingSync: (decoded['pendingSync'] as bool?) ?? false,
     cloudBackupHashes:
         (decoded['cloudBackupHashes'] as Map<String, dynamic>? ?? const {})
             .map((k, v) => MapEntry(k, '$v')),
@@ -377,6 +787,53 @@ ShopDataSnapshot _decodeSnapshotFromRawJson(String raw) {
             .map(InventoryValueSnapshot.fromJson)
             .toList(),
     featureUsage: _decodeFeatureUsageMap(decoded['featureUsage']),
+    trashRetentionDays:
+        (decoded['trashRetentionDays'] as num?)?.toInt() ?? 30,
+    inventorySelectedCategory:
+        (decoded['inventorySelectedCategory'] as String?) ?? '',
+    inventorySort: (decoded['inventorySort'] as String?) ?? 'newest',
+    posSelectedCategory: (decoded['posSelectedCategory'] as String?) ?? '',
+    sellers: (decoded['sellers'] as List<dynamic>? ?? const [])
+        .map((e) => '$e')
+        .where((e) => e.trim().isNotEmpty)
+        .toList(),
+    activeSeller: (decoded['activeSeller'] as String?) ?? '',
+    priceTagQueue: (decoded['priceTagQueue'] as List<dynamic>? ?? const [])
+        .map((e) => '$e')
+        .where((e) => e.trim().isNotEmpty)
+        .toList(),
+    cashDrawerMovements: (decoded['cashDrawerMovements'] as List<dynamic>? ??
+            const [])
+        .whereType<Map<String, dynamic>>()
+        .map(CashDrawerMovement.fromJson)
+        .toList(),
+  );
+}
+
+String encodePreRestoreEnvelope(
+  ({ShopDataSnapshot snapshot, String savedAt}) args,
+) {
+  return jsonEncode({
+    'savedAt': args.savedAt,
+    'snapshot': jsonDecode(_encodeSnapshotToJson(args.snapshot)),
+  });
+}
+
+String _encodePreRestoreEnvelope(
+  ({ShopDataSnapshot snapshot, String savedAt}) args,
+) =>
+    encodePreRestoreEnvelope(args);
+
+({ShopDataSnapshot snapshot, DateTime savedAt}) decodePreRestoreEnvelope(
+  String raw,
+) {
+  final decoded = jsonDecode(raw) as Map<String, dynamic>;
+  final savedAt = DateTime.tryParse('${decoded['savedAt'] ?? ''}') ??
+      DateTime.now();
+  final snapMap = decoded['snapshot'] as Map<String, dynamic>;
+  return (
+    snapshot: _decodeSnapshotFromRawJson(jsonEncode(snapMap)),
+    savedAt: savedAt,
   );
 }
 
@@ -416,9 +873,19 @@ String _encodeSnapshotToJson(ShopDataSnapshot snapshot) {
     if (snapshot.negativeStockReminders.isNotEmpty)
       'negativeStockReminders': snapshot.negativeStockReminders,
     'allowNegativeStock': snapshot.allowNegativeStock,
+    'allowCashierDiscounts': snapshot.allowCashierDiscounts,
     'autoBackupEnabled': snapshot.autoBackupEnabled,
     if (snapshot.lastAutoBackupAt.isNotEmpty)
       'lastAutoBackupAt': snapshot.lastAutoBackupAt,
+    if (snapshot.lastExternalBackupAt.isNotEmpty)
+      'lastExternalBackupAt': snapshot.lastExternalBackupAt,
+    if (snapshot.lastExternalBackupReminderAt.isNotEmpty)
+      'lastExternalBackupReminderAt': snapshot.lastExternalBackupReminderAt,
+    if (snapshot.lastCloudBackupProductsCount >= 0)
+      'lastCloudBackupProductsCount': snapshot.lastCloudBackupProductsCount,
+    if (snapshot.lastCloudBackupSalesCount >= 0)
+      'lastCloudBackupSalesCount': snapshot.lastCloudBackupSalesCount,
+    if (snapshot.pendingSync) 'pendingSync': true,
     if (snapshot.cloudBackupHashes.isNotEmpty)
       'cloudBackupHashes': snapshot.cloudBackupHashes,
     if (snapshot.sheetCatalogBaseline.isNotEmpty)
@@ -430,6 +897,22 @@ String _encodeSnapshotToJson(ShopDataSnapshot snapshot) {
       'featureUsage': snapshot.featureUsage.map(
         (k, v) => MapEntry(k, v.toJson()),
       ),
+    if (snapshot.trashRetentionDays != 30)
+      'trashRetentionDays': snapshot.trashRetentionDays,
+    if (snapshot.inventorySelectedCategory.isNotEmpty)
+      'inventorySelectedCategory': snapshot.inventorySelectedCategory,
+    if (snapshot.inventorySort != 'newest' && snapshot.inventorySort.isNotEmpty)
+      'inventorySort': snapshot.inventorySort,
+    if (snapshot.posSelectedCategory.isNotEmpty)
+      'posSelectedCategory': snapshot.posSelectedCategory,
+    if (snapshot.sellers.isNotEmpty) 'sellers': snapshot.sellers,
+    if (snapshot.activeSeller.isNotEmpty)
+      'activeSeller': snapshot.activeSeller,
+    if (snapshot.priceTagQueue.isNotEmpty)
+      'priceTagQueue': snapshot.priceTagQueue,
+    if (snapshot.cashDrawerMovements.isNotEmpty)
+      'cashDrawerMovements':
+          snapshot.cashDrawerMovements.map((e) => e.toJson()).toList(),
   });
 }
 

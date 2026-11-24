@@ -10,6 +10,7 @@ import '../widgets/incoming_price_analysis_sheet.dart';
 import '../widgets/invoices_history_sheet.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/stock_in_sheet.dart';
+import '../widgets/suppliers_sheet.dart';
 
 class ExpensesScreen extends StatefulWidget {
   const ExpensesScreen({super.key, required this.controller});
@@ -86,6 +87,15 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         controller: widget.controller,
         initialFilter: _filter,
       ),
+    );
+  }
+
+  void _openSuppliersSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => SuppliersSheet(controller: widget.controller),
     );
   }
 
@@ -204,6 +214,17 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                         ),
                         label: Text(strings.incomingPricesBtn),
                         onPressed: _openIncomingPricesSheet,
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        avatar: const Icon(
+                          Icons.storefront_outlined,
+                          size: 18,
+                        ),
+                        label: Text(strings.suppliersDirectoryBtn),
+                        onPressed: _openSuppliersSheet,
                       ),
                     ),
                     Padding(

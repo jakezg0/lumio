@@ -6,12 +6,15 @@ import 'dart:ui' show Locale, PlatformDispatcher;
 import 'package:flutter/foundation.dart';
 
 import '../l10n/app_strings.dart';
+import '../models/cash_drawer_movement.dart';
 import '../models/customer.dart';
 import '../models/expense.dart';
 import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/stock_in.dart';
+import '../services/daily_local_backup_service.dart';
 import '../services/google_sheets_service.dart';
+import '../services/input_normalizer.dart';
 import '../services/inventory_storage.dart';
 import '../services/sheet_export_helper.dart';
 import '../services/sqlite_inventory_storage.dart';
@@ -28,17 +31,25 @@ class CartLine {
     required this.quantity,
     this.customUnitPrice,
     this.useWholesalePrice = false,
+    this.wholesaleDisabled = false,
   });
 
   final Product product;
-  final int quantity;
+  final double quantity;
   final double? customUnitPrice;
   final bool useWholesalePrice;
+  final bool wholesaleDisabled;
+
+  bool get isAutoWholesaleApplied =>
+      !wholesaleDisabled && product.isAutoWholesaleForQty(quantity);
+
+  bool get effectiveUseWholesale =>
+      !wholesaleDisabled &&
+      product.hasWholesalePrice &&
+      (useWholesalePrice || isAutoWholesaleApplied);
 
   double get defaultUnitPrice =>
-      useWholesalePrice && product.hasWholesalePrice
-          ? product.wholesalePrice
-          : product.sellPrice;
+      effectiveUseWholesale ? product.wholesalePrice : product.sellPrice;
 
   double get unitPrice => customUnitPrice ?? defaultUnitPrice;
 
@@ -47,7 +58,7 @@ class CartLine {
       (customUnitPrice! - defaultUnitPrice).abs() > 0.009;
 
   bool get isWholesalePriceApplied =>
-      !hasCustomPrice && useWholesalePrice && product.hasWholesalePrice;
+      !hasCustomPrice && effectiveUseWholesale;
 
   double get lineTotal => unitPrice * quantity;
   double get lineCost => product.costPrice * quantity;
@@ -89,7 +100,7 @@ class TopProductStat {
 
   final String productId;
   final String productName;
-  final int unitsSold;
+  final double unitsSold;
   final double revenue;
   final double profit;
 }
@@ -105,7 +116,7 @@ class SalesTimeBucketStat {
 
   final int key;
   final int ordersCount;
-  final int unitsSold;
+  final double unitsSold;
   final double revenue;
   final double profit;
 }
@@ -128,9 +139,32 @@ class OutOfStockStat {
   final double estimatedLostProfit;
 }
 
+class FrozenCashItem {
+  const FrozenCashItem({
+    required this.product,
+    required this.frozenValue,
+    required this.potentialRevenue,
+    required this.daysWithoutSales,
+    required this.hasEverSold,
+  });
+
+  final Product product;
+  final double frozenValue;
+  final double potentialRevenue;
+  final int daysWithoutSales;
+  final bool hasEverSold;
+}
+
 enum AdviceSeverity { urgent, warning, opportunity, info }
 
-enum AdviceActionType { none, addToStockIn, editPrice, barcodeLabel, openProduct }
+enum AdviceActionType {
+  none,
+  addToStockIn,
+  editPrice,
+  barcodeLabel,
+  openProduct,
+  messageCustomer,
+}
 
 class DailyProductAdvice {
   const DailyProductAdvice({
@@ -139,6 +173,9 @@ class DailyProductAdvice {
     required this.title,
     required this.body,
     this.product,
+    this.customerName,
+    this.customerPhone,
+    this.whatsappMessage,
     this.actionType = AdviceActionType.none,
   });
 
@@ -147,6 +184,9 @@ class DailyProductAdvice {
   final String title;
   final String body;
   final Product? product;
+  final String? customerName;
+  final String? customerPhone;
+  final String? whatsappMessage;
   final AdviceActionType actionType;
 }
 
@@ -176,7 +216,7 @@ class IncomingPriceEntry {
   final String supplierName;
   final String currencyCode;
   final double? exchangeRate;
-  final int quantity;
+  final double quantity;
   final double unitCost;
 
   String get exchangeRateLabel {
@@ -209,7 +249,7 @@ class IncomingPriceAnalysis {
   final String productId;
   final String productName;
   final int deliveriesCount;
-  final int totalUnits;
+  final double totalUnits;
   final double totalSpend;
   final double latestCost;
   final double? previousCost;
@@ -303,18 +343,24 @@ abstract final class FeatureUsageKeys {
 }
 
 class ShopController extends ChangeNotifier {
-  ShopController({InventoryStorage? storage})
-      : _storage = storage ?? SqliteInventoryStorage();
+  ShopController({
+    InventoryStorage? storage,
+    DailyLocalBackupService? dailyBackupService,
+  })  : _storage = storage ?? SqliteInventoryStorage(),
+        _dailyBackupService = dailyBackupService ?? DailyLocalBackupService();
 
   final InventoryStorage _storage;
+  final DailyLocalBackupService _dailyBackupService;
 
   final List<Product> _products = [];
   final List<Sale> _sales = [];
   final List<Expense> _expenses = [];
   final List<Customer> _customers = [];
   final List<StockInRecord> _stockIns = [];
-  final Map<String, int> _cart = {};
+  final Map<String, double> _cart = {};
   final Map<String, double> _cartCustomPrices = {};
+  final Map<String, Product> _customCartProducts = {};
+  final Set<String> _wholesaleDisabledProducts = {};
   bool _wholesaleCartMode = false;
 
   AppLanguage _language = AppLanguage.en;
@@ -328,9 +374,16 @@ class ShopController extends ChangeNotifier {
   bool _useBiometricUnlock = false;
   bool _cashierMode = true;
   bool _allowNegativeStock = true;
+  bool _allowCashierDiscounts = true;
   bool _autoBackupEnabled = true;
   String _lastAutoBackupAt = '';
+  String _lastExternalBackupAt = '';
+  String _lastExternalBackupReminderAt = '';
   String _lastAutoBackupError = '';
+  int _lastCloudBackupProductsCount = -1;
+  int _lastCloudBackupSalesCount = -1;
+  bool _bulkDeleteAuthorized = false;
+  bool _pendingSync = false;
   final Map<String, String> _cloudBackupHashes = {};
   final Map<String, String> _sheetCatalogBaseline = {};
   Timer? _autoBackupTimer;
@@ -354,11 +407,104 @@ class ShopController extends ChangeNotifier {
   final Map<String, int> _negativeStockReminders = {};
   final List<InventoryValueSnapshot> _inventorySnapshots = [];
   final Map<String, FeatureUsageStat> _featureUsage = {};
+  int _trashRetentionDays = 30;
+  String _inventorySelectedCategory = '';
+  String _inventorySort = 'newest';
+  String _posSelectedCategory = '';
+  final List<String> _sellers = [];
+  String _activeSeller = '';
+  final List<String> _priceTagQueue = [];
+  final List<CashDrawerMovement> _cashDrawerMovements = [];
   Timer? _usageSaveTimer;
+  bool _hasPreRestoreBackup = false;
+  DateTime? _preRestoreBackupAt;
+  String _lastDailyLocalBackupDate = '';
+  bool _dailyLocalBackupInProgress = false;
   bool _isLoaded = false;
+  bool _archiveAndTrashLoaded = false;
+  bool _allSalesLoaded = false;
   int _idCounter = 0;
+  List<DailyProductAdvice>? _cachedDailyAdvices;
+  String _cachedDailyAdvicesKey = '';
+  Map<String, double>? _cachedSoldUnitsByProduct;
+  Map<String, int>? _cachedDaysOfStockLeft;
+  ({double units, double costValue, double sellValue, List<Product> lowStock})?
+      _cachedInventoryTotals;
+  Map<String, Map<String, int>>? _cachedCoOccurrence;
+  int _cachedCoOccurrenceSalesCount = -1;
+  String _cachedCoOccurrenceTopSaleId = '';
 
+  @override
+  void notifyListeners() {
+    _cachedDailyAdvices = null;
+    _cachedSoldUnitsByProduct = null;
+    _cachedDaysOfStockLeft = null;
+    _cachedInventoryTotals = null;
+    super.notifyListeners();
+  }
+
+  bool get hasPreRestoreBackup => _hasPreRestoreBackup;
+  DateTime? get preRestoreBackupAt => _preRestoreBackupAt;
   bool get isLoaded => _isLoaded;
+  bool get archiveAndTrashLoaded => _archiveAndTrashLoaded;
+  bool get allSalesLoaded => _allSalesLoaded;
+
+  Future<void> ensureArchiveAndTrashLoaded() async {
+    if (_archiveAndTrashLoaded) return;
+    final loaded = await _storage.loadArchiveAndTrash();
+    _archiveAndTrashLoaded = true;
+    var changed = false;
+    final prodIds = _products.map((p) => p.id).toSet();
+    for (final p in loaded.products) {
+      if (prodIds.add(p.id)) {
+        _products.add(p);
+        changed = true;
+      }
+    }
+    final saleIds = _sales.map((s) => s.id).toSet();
+    for (final s in loaded.sales) {
+      if (saleIds.add(s.id)) {
+        _sales.add(s);
+        changed = true;
+      }
+    }
+    final expIds = _expenses.map((e) => e.id).toSet();
+    for (final e in loaded.expenses) {
+      if (expIds.add(e.id)) {
+        _expenses.add(e);
+        changed = true;
+      }
+    }
+    if (changed) {
+      _sales.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      _expenses.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      purgeExpiredTrash();
+      notifyListeners();
+    }
+  }
+
+  Future<void> ensureAllSalesLoaded() async {
+    if (_allSalesLoaded) return;
+    final loadedSales = await _storage.loadAllActiveSales();
+    _allSalesLoaded = true;
+    final saleIds = _sales.map((s) => s.id).toSet();
+    var changed = false;
+    for (final s in loadedSales) {
+      if (saleIds.add(s.id)) {
+        _sales.add(s);
+        changed = true;
+      }
+    }
+    if (changed) {
+      _sales.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      notifyListeners();
+    }
+  }
+
+  Future<void> ensureFullHistoryLoaded() async {
+    await ensureArchiveAndTrashLoaded();
+    await ensureAllSalesLoaded();
+  }
   AppLanguage get language => _language;
   bool get followSystemLanguage => _followSystemLanguage;
   AppCurrency get currency => _currency;
@@ -374,12 +520,35 @@ class ShopController extends ChangeNotifier {
   bool get cashierMode => _cashierMode;
   bool get allowNegativeStock => _allowNegativeStock;
   bool get canSellNegativeStock => _allowNegativeStock && !_cashierMode;
+  bool get allowCashierDiscounts => _allowCashierDiscounts;
+  bool get canGiveDiscounts => !_cashierMode || _allowCashierDiscounts;
   bool get autoBackupEnabled => _autoBackupEnabled;
   String get lastAutoBackupAt => _lastAutoBackupAt;
+  String get lastExternalBackupAt => _lastExternalBackupAt;
+  bool get shouldPromptExternalBackup {
+    if (!_isLoaded || _cashierMode) return false;
+    if (_products.isEmpty && _sales.isEmpty) return false;
+    final now = DateTime.now();
+    final lastBackup = DateTime.tryParse(_lastExternalBackupAt);
+    if (lastBackup != null &&
+        now.difference(lastBackup) < const Duration(days: 7)) {
+      return false;
+    }
+    final lastPrompt = DateTime.tryParse(_lastExternalBackupReminderAt);
+    if (lastPrompt != null &&
+        now.difference(lastPrompt) < const Duration(days: 7)) {
+      return false;
+    }
+    return true;
+  }
   bool get autoBackupInProgress => _autoBackupInProgress;
   bool get sheetPullInProgress => _sheetPullInProgress;
   bool get isSyncing => _sheetPullInProgress || _autoBackupInProgress;
   String get lastAutoBackupError => _lastAutoBackupError;
+  int get lastCloudBackupProductsCount => _lastCloudBackupProductsCount;
+  int get lastCloudBackupSalesCount => _lastCloudBackupSalesCount;
+  bool get isBulkDeleteAuthorized => _bulkDeleteAuthorized;
+  bool get pendingSync => _pendingSync;
   String get lastSheetSyncNotice => _lastSheetSyncNotice;
   bool get lastSheetSyncIsError => _lastSheetSyncIsError;
   int get syncNoticeVersion => _syncNoticeVersion;
@@ -407,6 +576,40 @@ class ShopController extends ChangeNotifier {
       _expenses.where((e) => e.isTrashed).toList(growable: false);
 
   List<Customer> get customers => List.unmodifiable(_customers);
+  List<String> get sellers => List.unmodifiable(_sellers);
+  String get activeSeller => _activeSeller;
+  List<String> get priceTagQueue => List.unmodifiable(_priceTagQueue);
+  List<Product> get priceTagQueueProducts {
+    final result = <Product>[];
+    for (final id in _priceTagQueue) {
+      final p = findProductById(id);
+      if (p != null && p.isActive) {
+        result.add(p);
+      }
+    }
+    return result;
+  }
+
+  List<CashDrawerMovement> get cashDrawerMovements =>
+      List.unmodifiable(_cashDrawerMovements);
+
+  List<CashDrawerMovement> get todayCashDrawerMovements {
+    final now = DateTime.now();
+    final start = DateTime(now.year, now.month, now.day);
+    final end = start.add(const Duration(days: 1));
+    return _cashDrawerMovements
+        .where((m) => !m.createdAt.isBefore(start) && m.createdAt.isBefore(end))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  }
+
+  double get todayCashDepositsTotal => todayCashDrawerMovements
+      .where((m) => m.isDeposit)
+      .fold(0.0, (sum, m) => sum + m.amount);
+
+  double get todayCashWithdrawalsTotal => todayCashDrawerMovements
+      .where((m) => !m.isDeposit)
+      .fold(0.0, (sum, m) => sum + m.amount);
   List<String> get recentCustomerNames {
     final seen = <String>{};
     final result = <String>[];
@@ -464,15 +667,26 @@ class ShopController extends ChangeNotifier {
   int get archiveCount => archivedProducts.length + archivedSales.length;
   int get trashCount =>
       trashedProducts.length + trashedSales.length + trashedExpenses.length;
+  int get trashRetentionDays => _trashRetentionDays;
+  String get inventorySelectedCategory => _inventorySelectedCategory;
+  String get inventorySort => _inventorySort;
+  String get posSelectedCategory => _posSelectedCategory;
 
   String _nextId(String prefix) {
     _idCounter += 1;
     return '${prefix}_${DateTime.now().microsecondsSinceEpoch}_$_idCounter';
   }
 
+  Future<void> _refreshPreRestoreStatus() async {
+    final backup = await _storage.loadPreRestoreBackup();
+    _hasPreRestoreBackup = backup != null;
+    _preRestoreBackupAt = backup?.savedAt;
+  }
+
   Future<void> initialize() async {
     final snapshot = await _storage.load();
     _applySnapshot(snapshot);
+    await _refreshPreRestoreStatus();
     var needsPersist = false;
     if (!_catalogSeeded) {
       _catalogSeeded = true;
@@ -481,17 +695,24 @@ class ShopController extends ChangeNotifier {
     if (_captureCurrentMonthSnapshotIfMissing()) {
       needsPersist = true;
     }
+    if (purgeExpiredTrash() > 0) {
+      needsPersist = true;
+    }
     if (needsPersist) {
       await _persist();
     }
     _isLoaded = true;
     notifyListeners();
+    _maybeSaveDailyLocalBackup();
     if (_autoBackupEnabled && _googleSheetsUrl.trim().isNotEmpty) {
       syncFromSheetInBackground(force: true);
     }
   }
 
-  void _applySnapshot(ShopDataSnapshot snapshot) {
+  void _applySnapshot(
+    ShopDataSnapshot snapshot, {
+    bool includeSettings = true,
+  }) {
     _products
       ..clear()
       ..addAll(snapshot.products);
@@ -511,35 +732,44 @@ class ShopController extends ChangeNotifier {
       ..clear()
       ..addAll(snapshot.stockIns);
     _stockIns.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final rawLang = snapshot.languageCode.trim().toLowerCase();
-    if (rawLang.isEmpty || rawLang == 'auto') {
-      _followSystemLanguage = true;
-      _language = AppLanguage.fromSystemLocales(
-        PlatformDispatcher.instance.locales,
-      );
-    } else {
-      _followSystemLanguage = false;
-      _language = AppLanguage.fromCode(rawLang);
+    if (includeSettings) {
+      final rawLang = snapshot.languageCode.trim().toLowerCase();
+      if (rawLang.isEmpty || rawLang == 'auto') {
+        _followSystemLanguage = true;
+        _language = AppLanguage.fromSystemLocales(
+          PlatformDispatcher.instance.locales,
+        );
+      } else {
+        _followSystemLanguage = false;
+        _language = AppLanguage.fromCode(rawLang);
+      }
+      _currency = AppCurrency.fromCode(snapshot.currencyCode);
+      _shopName = snapshot.shopName;
+      _shopAddress = snapshot.shopAddress;
+      _shopPhone = snapshot.shopPhone;
+      _receiptFooter = snapshot.receiptFooter;
+      _ownerPin = snapshot.ownerPin;
+      _useBiometricUnlock = snapshot.useBiometricUnlock;
+      _cashierMode = snapshot.cashierMode;
+      _allowNegativeStock = snapshot.allowNegativeStock;
+      _allowCashierDiscounts = snapshot.allowCashierDiscounts;
+      _autoBackupEnabled = snapshot.autoBackupEnabled;
+      _lastAutoBackupAt = snapshot.lastAutoBackupAt;
+      _lastExternalBackupAt = snapshot.lastExternalBackupAt;
+      _lastExternalBackupReminderAt = snapshot.lastExternalBackupReminderAt;
+      _lastCloudBackupProductsCount = snapshot.lastCloudBackupProductsCount;
+      _lastCloudBackupSalesCount = snapshot.lastCloudBackupSalesCount;
+      _bulkDeleteAuthorized = false;
+      _pendingSync = snapshot.pendingSync;
+      _cloudBackupHashes
+        ..clear()
+        ..addAll(snapshot.cloudBackupHashes);
+      _sheetCatalogBaseline
+        ..clear()
+        ..addAll(snapshot.sheetCatalogBaseline);
+      _googleSheetsUrl = snapshot.googleSheetsUrl;
+      _googleSheetsSecret = snapshot.googleSheetsSecret;
     }
-    _currency = AppCurrency.fromCode(snapshot.currencyCode);
-    _shopName = snapshot.shopName;
-    _shopAddress = snapshot.shopAddress;
-    _shopPhone = snapshot.shopPhone;
-    _receiptFooter = snapshot.receiptFooter;
-    _ownerPin = snapshot.ownerPin;
-    _useBiometricUnlock = snapshot.useBiometricUnlock;
-    _cashierMode = snapshot.cashierMode;
-    _allowNegativeStock = snapshot.allowNegativeStock;
-    _autoBackupEnabled = snapshot.autoBackupEnabled;
-    _lastAutoBackupAt = snapshot.lastAutoBackupAt;
-    _cloudBackupHashes
-      ..clear()
-      ..addAll(snapshot.cloudBackupHashes);
-    _sheetCatalogBaseline
-      ..clear()
-      ..addAll(snapshot.sheetCatalogBaseline);
-    _googleSheetsUrl = snapshot.googleSheetsUrl;
-    _googleSheetsSecret = snapshot.googleSheetsSecret;
     _catalogSeeded = snapshot.catalogSeeded ||
         _products.isNotEmpty ||
         _sales.isNotEmpty ||
@@ -566,12 +796,12 @@ class ShopController extends ChangeNotifier {
       ..clear()
       ..addAll(snapshot.heldSales);
     _heldSales.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final fiveYearsAgo =
-        DateTime.now().subtract(const Duration(days: changeHistoryRetentionDays));
+    final memoryCutoff =
+        DateTime.now().subtract(const Duration(days: inMemoryChangeHistoryDays));
     _productChanges
       ..clear()
       ..addAll(
-        snapshot.productChanges.where((e) => !e.createdAt.isBefore(fiveYearsAgo)),
+        snapshot.productChanges.where((e) => !e.createdAt.isBefore(memoryCutoff)),
       );
     _productChanges.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     _negativeStockReminders
@@ -589,9 +819,28 @@ class ShopController extends ChangeNotifier {
       ..clear()
       ..addAll(dedupedSnaps.values)
       ..sort((a, b) => b.monthKey.compareTo(a.monthKey));
-    _featureUsage
-      ..clear()
-      ..addAll(snapshot.featureUsage);
+    if (includeSettings) {
+      _featureUsage
+        ..clear()
+        ..addAll(snapshot.featureUsage);
+      _trashRetentionDays =
+          snapshot.trashRetentionDays < 0 ? 30 : snapshot.trashRetentionDays;
+      _inventorySelectedCategory = snapshot.inventorySelectedCategory;
+      _inventorySort = snapshot.inventorySort.isNotEmpty
+          ? snapshot.inventorySort
+          : 'newest';
+      _posSelectedCategory = snapshot.posSelectedCategory;
+      _sellers
+        ..clear()
+        ..addAll(snapshot.sellers);
+      _activeSeller = snapshot.activeSeller;
+      _priceTagQueue
+        ..clear()
+        ..addAll(snapshot.priceTagQueue);
+      _cashDrawerMovements
+        ..clear()
+        ..addAll(snapshot.cashDrawerMovements);
+    }
   }
 
   ShopDataSnapshot createBackupSnapshot() {
@@ -621,13 +870,131 @@ class ShopController extends ChangeNotifier {
       productChanges: List.unmodifiable(_productChanges),
       negativeStockReminders: Map.unmodifiable(_negativeStockReminders),
       allowNegativeStock: _allowNegativeStock,
+      allowCashierDiscounts: _allowCashierDiscounts,
       autoBackupEnabled: _autoBackupEnabled,
       lastAutoBackupAt: _lastAutoBackupAt,
+      lastExternalBackupAt: _lastExternalBackupAt,
+      lastExternalBackupReminderAt: _lastExternalBackupReminderAt,
+      lastCloudBackupProductsCount: _lastCloudBackupProductsCount,
+      lastCloudBackupSalesCount: _lastCloudBackupSalesCount,
+      pendingSync: _pendingSync,
       cloudBackupHashes: Map.unmodifiable(_cloudBackupHashes),
       sheetCatalogBaseline: Map.unmodifiable(_sheetCatalogBaseline),
       inventorySnapshots: List.unmodifiable(_inventorySnapshots),
       featureUsage: Map.unmodifiable(_featureUsage),
+      trashRetentionDays: _trashRetentionDays,
+      inventorySelectedCategory: _inventorySelectedCategory,
+      inventorySort: _inventorySort,
+      posSelectedCategory: _posSelectedCategory,
+      sellers: List.unmodifiable(_sellers),
+      activeSeller: _activeSeller,
+      priceTagQueue: List.unmodifiable(_priceTagQueue),
+      cashDrawerMovements: List.unmodifiable(_cashDrawerMovements),
     );
+  }
+
+  Future<void> markPriceTagPrinted(String productId) async {
+    if (!_priceTagQueue.remove(productId)) return;
+    notifyListeners();
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> clearPriceTagQueue() async {
+    if (_priceTagQueue.isEmpty) return;
+    _priceTagQueue.clear();
+    notifyListeners();
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> addCashDrawerMovement({
+    required bool isDeposit,
+    required double amount,
+    String note = '',
+  }) async {
+    if (amount <= 0) return;
+    final movement = CashDrawerMovement(
+      id: '${DateTime.now().microsecondsSinceEpoch}_${_cashDrawerMovements.length}',
+      isDeposit: isDeposit,
+      amount: amount,
+      note: note.trim(),
+      sellerName: _activeSeller,
+      createdAt: DateTime.now(),
+    );
+    _cashDrawerMovements.insert(0, movement);
+    if (_cashDrawerMovements.length > 500) {
+      _cashDrawerMovements.removeRange(500, _cashDrawerMovements.length);
+    }
+    notifyListeners();
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> deleteCashDrawerMovement(String id) async {
+    final before = _cashDrawerMovements.length;
+    _cashDrawerMovements.removeWhere((m) => m.id == id);
+    if (_cashDrawerMovements.length == before) return;
+    notifyListeners();
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> setActiveSeller(String name) async {
+    final clean = InputNormalizer.normalizeDisplayName(name);
+    if (_activeSeller == clean) return;
+    _activeSeller = clean;
+    notifyListeners();
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> addSeller(String name) async {
+    final clean = InputNormalizer.normalizeDisplayName(name);
+    if (clean.isEmpty) return;
+    final exists = _sellers.any((s) => s.toLowerCase() == clean.toLowerCase());
+    if (!exists) {
+      _sellers.add(clean);
+    }
+    _activeSeller = clean;
+    notifyListeners();
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> removeSeller(String name) async {
+    final clean = name.trim().toLowerCase();
+    final before = _sellers.length;
+    _sellers.removeWhere((s) => s.toLowerCase() == clean);
+    if (_activeSeller.toLowerCase() == clean) {
+      _activeSeller = '';
+    }
+    if (_sellers.length != before || _activeSeller.isEmpty) {
+      notifyListeners();
+      await _storage.save(createBackupSnapshot());
+    }
+  }
+
+  Future<void> setInventoryViewPreferences({
+    String? category,
+    bool updateCategory = false,
+    String? sort,
+  }) async {
+    var changed = false;
+    if (updateCategory) {
+      final clean = (category ?? '').trim();
+      if (_inventorySelectedCategory != clean) {
+        _inventorySelectedCategory = clean;
+        changed = true;
+      }
+    }
+    if (sort != null && sort.isNotEmpty && _inventorySort != sort) {
+      _inventorySort = sort;
+      changed = true;
+    }
+    if (!changed) return;
+    await _storage.save(createBackupSnapshot());
+  }
+
+  Future<void> setPosSelectedCategory(String? category) async {
+    final clean = (category ?? '').trim();
+    if (_posSelectedCategory == clean) return;
+    _posSelectedCategory = clean;
+    await _storage.save(createBackupSnapshot());
   }
 
   Future<HeldSale?> holdCurrentCart({String label = ''}) async {
@@ -635,12 +1002,13 @@ class ShopController extends ChangeNotifier {
     final held = HeldSale(
       id: _nextId('hld'),
       label: label.trim(),
-      quantities: Map<String, int>.from(_cart),
+      quantities: Map<String, double>.from(_cart),
       createdAt: DateTime.now(),
     );
     _heldSales.insert(0, held);
     _cart.clear();
     _cartCustomPrices.clear();
+    _wholesaleDisabledProducts.clear();
     _incrementFeatureUsageInMemory(FeatureUsageKeys.holdSale);
     notifyListeners();
     await _persist();
@@ -657,13 +1025,14 @@ class ShopController extends ChangeNotifier {
         HeldSale(
           id: _nextId('hld'),
           label: '',
-          quantities: Map<String, int>.from(_cart),
+          quantities: Map<String, double>.from(_cart),
           createdAt: DateTime.now(),
         ),
       );
     }
     _cart.clear();
     _cartCustomPrices.clear();
+    _wholesaleDisabledProducts.clear();
     for (final entry in held.quantities.entries) {
       final product = findProductById(entry.key);
       if (product == null || !product.isActive) continue;
@@ -701,15 +1070,15 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<int> addProductToStockInDraft(
+  Future<double> addProductToStockInDraft(
     Product product, {
-    int delta = 1,
+    double delta = 1,
   }) async {
     final existing = _stockInDraft;
-    final quantities = Map<String, int>.from(existing?.quantities ?? const {});
+    final quantities = Map<String, double>.from(existing?.quantities ?? const {});
     final unitCosts = Map<String, double>.from(existing?.unitCosts ?? const {});
     final sellPrices = Map<String, double>.from(existing?.sellPrices ?? const {});
-    final nextQty = ((quantities[product.id] ?? 0) + delta).clamp(0, 999999);
+    final nextQty = ((quantities[product.id] ?? 0) + delta).clamp(0.0, 999999.0);
     if (nextQty > 0) {
       quantities[product.id] = nextQty;
       unitCosts.putIfAbsent(product.id, () => product.costPrice);
@@ -746,18 +1115,33 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> restoreFromSnapshot(ShopDataSnapshot snapshot) async {
+  Future<void> restoreFromSnapshot(
+    ShopDataSnapshot snapshot, {
+    bool includeSettings = true,
+  }) async {
+    // Hard rule: always save an automatic pre-restore snapshot of the current
+    // state before overwriting anything, so the owner can roll back on error.
+    await ensureFullHistoryLoaded();
+    await _storage.savePreRestoreBackup(createBackupSnapshot());
+    _hasPreRestoreBackup = true;
+    _preRestoreBackupAt = DateTime.now();
+
     final prevUrl = _googleSheetsUrl;
     final prevSecret = _googleSheetsSecret;
-    _applySnapshot(snapshot);
-    if (_googleSheetsUrl.isEmpty && prevUrl.isNotEmpty) {
-      _googleSheetsUrl = prevUrl;
-    }
-    if (_googleSheetsSecret.isEmpty && prevSecret.isNotEmpty) {
-      _googleSheetsSecret = prevSecret;
+    _applySnapshot(snapshot, includeSettings: includeSettings);
+    _archiveAndTrashLoaded = true;
+    _allSalesLoaded = true;
+    if (includeSettings) {
+      if (_googleSheetsUrl.isEmpty && prevUrl.isNotEmpty) {
+        _googleSheetsUrl = prevUrl;
+      }
+      if (_googleSheetsSecret.isEmpty && prevSecret.isNotEmpty) {
+        _googleSheetsSecret = prevSecret;
+      }
     }
     _cart.clear();
     _cartCustomPrices.clear();
+    _pendingSync = false;
     notifyListeners();
     _suppressAutoBackup = true;
     try {
@@ -765,6 +1149,28 @@ class ShopController extends ChangeNotifier {
     } finally {
       _suppressAutoBackup = false;
     }
+  }
+
+  Future<bool> rollbackToPreRestoreBackup() async {
+    final backup = await _storage.loadPreRestoreBackup();
+    if (backup == null) {
+      _hasPreRestoreBackup = false;
+      _preRestoreBackupAt = null;
+      notifyListeners();
+      return false;
+    }
+    _applySnapshot(backup.snapshot, includeSettings: true);
+    _cart.clear();
+    _cartCustomPrices.clear();
+    _pendingSync = false;
+    notifyListeners();
+    _suppressAutoBackup = true;
+    try {
+      await _persist();
+    } finally {
+      _suppressAutoBackup = false;
+    }
+    return true;
   }
 
   List<({Product product, int remaining})> get activeNegativeStockReminders {
@@ -807,7 +1213,7 @@ class ShopController extends ChangeNotifier {
     if (negativeProducts.isEmpty) return 0;
 
     final existing = _stockInDraft;
-    final quantities = Map<String, int>.from(existing?.quantities ?? const {});
+    final quantities = Map<String, double>.from(existing?.quantities ?? const {});
     final unitCosts = Map<String, double>.from(existing?.unitCosts ?? const {});
     final sellPrices = Map<String, double>.from(existing?.sellPrices ?? const {});
 
@@ -920,14 +1326,67 @@ class ShopController extends ChangeNotifier {
     await _storage.save(createBackupSnapshot());
   }
 
+  void _maybeSaveDailyLocalBackup() {
+    if (_dailyLocalBackupInProgress) return;
+    if (_products.isEmpty && _sales.isEmpty && _expenses.isEmpty) return;
+    final now = DateTime.now();
+    final todayKey =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    if (_lastDailyLocalBackupDate == todayKey) return;
+    _dailyLocalBackupInProgress = true;
+    final snapshot = createBackupSnapshot();
+    _dailyBackupService.saveDailyBackupIfNeeded(snapshot, now: now).then((_) {
+      _lastDailyLocalBackupDate = todayKey;
+    }).catchError((Object e) {
+      debugPrint('Daily local backup error: $e');
+    }).whenComplete(() {
+      _dailyLocalBackupInProgress = false;
+    });
+  }
+
+  Future<List<DailyBackupEntry>> listDailyLocalBackups() =>
+      _dailyBackupService.listBackups();
+
+  Future<bool> createDailyLocalBackupNow() async {
+    final now = DateTime.now();
+    final saved = await _dailyBackupService.saveDailyBackupIfNeeded(
+      createBackupSnapshot(),
+      now: now,
+      force: true,
+    );
+    if (saved) {
+      _lastDailyLocalBackupDate =
+          '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    }
+    return saved;
+  }
+
+  Future<bool> restoreFromDailyLocalBackup(
+    DailyBackupEntry entry, {
+    bool includeSettings = false,
+  }) async {
+    final snapshot = await _dailyBackupService.loadBackup(entry);
+    if (snapshot == null) return false;
+    await restoreFromSnapshot(snapshot, includeSettings: includeSettings);
+    return true;
+  }
+
   Future<void> _persist() async {
     _usageSaveTimer?.cancel();
     _pruneResolvedNegativeReminders();
     _captureCurrentMonthSnapshotIfMissing();
-    await _storage.save(createBackupSnapshot());
-    if (!_suppressAutoBackup &&
+    final shouldAutoSync = !_suppressAutoBackup &&
         _autoBackupEnabled &&
-        _googleSheetsUrl.trim().isNotEmpty) {
+        _googleSheetsUrl.trim().isNotEmpty;
+    if (shouldAutoSync && !_pendingSync) {
+      _pendingSync = true;
+      notifyListeners();
+    }
+    await _storage.save(createBackupSnapshot());
+    if (!_suppressAutoBackup) {
+      _maybeSaveDailyLocalBackup();
+    }
+    if (shouldAutoSync) {
       _scheduleAutoBackup();
     }
   }
@@ -961,6 +1420,18 @@ class ShopController extends ChangeNotifier {
     notifyListeners();
     try {
       await syncCloudBackupDelta(forceFull: false);
+    } on CloudBackupShrinkException catch (e) {
+      debugPrint('Auto-backup shrink blocked: $e');
+      _lastAutoBackupError = '$e';
+      _lastSheetSyncNotice = '$e';
+      _lastSheetSyncIsError = true;
+      _syncNoticeVersion += 1;
+    } on CloudTimestampConflictException catch (e) {
+      debugPrint('Auto-backup timestamp blocked: $e');
+      _lastAutoBackupError = '$e';
+      _lastSheetSyncNotice = '$e';
+      _lastSheetSyncIsError = true;
+      _syncNoticeVersion += 1;
     } catch (e, st) {
       debugPrint('Auto-backup error: $e\n$st');
       _lastAutoBackupError = '$e';
@@ -990,6 +1461,7 @@ class ShopController extends ChangeNotifier {
       'costPrice': p.costPrice,
       'sellPrice': p.sellPrice,
       'wholesalePrice': p.wholesalePrice,
+      'wholesaleMinQty': p.wholesaleMinQty,
       'stock': p.stock,
       'lowStockThreshold': p.lowStockThreshold,
     });
@@ -1052,6 +1524,11 @@ class ShopController extends ChangeNotifier {
     } finally {
       _sheetPullInProgress = false;
       notifyListeners();
+      if (_pendingSync &&
+          _autoBackupEnabled &&
+          _googleSheetsUrl.trim().isNotEmpty) {
+        _runAutoBackupSilently();
+      }
     }
   }
 
@@ -1208,6 +1685,11 @@ class ShopController extends ChangeNotifier {
           normalizedRemote.wholesalePrice,
           'wholesalePrice',
         ),
+        wholesaleMinQty: pickVal(
+          local.wholesaleMinQty,
+          normalizedRemote.wholesaleMinQty,
+          'wholesaleMinQty',
+        ),
         stock: pickVal(local.stock, normalizedRemote.stock, 'stock'),
         lowStockThreshold: pickVal(
           local.lowStockThreshold,
@@ -1270,12 +1752,211 @@ class ShopController extends ChangeNotifier {
     );
   }
 
+  CloudBackupShrinkException? detectCloudBackupShrinkAnomaly() {
+    final curProducts = products.length;
+    final curSales = sales.length;
+    final prevProducts = _lastCloudBackupProductsCount;
+    final prevSales = _lastCloudBackupSalesCount;
+
+    final productsDropped = prevProducts > 0 &&
+        ((prevProducts >= 10 &&
+                prevProducts - curProducts >= 5 &&
+                curProducts <= prevProducts * 0.5) ||
+            curProducts == 0);
+    final salesDropped = prevSales > 0 &&
+        ((prevSales >= 10 &&
+                prevSales - curSales >= 5 &&
+                curSales <= prevSales * 0.5) ||
+            curSales == 0);
+
+    if (!productsDropped && !salesDropped) return null;
+    return CloudBackupShrinkException(
+      message: strings.cloudBackupShrinkBlockedMsg(
+        prevProducts,
+        curProducts,
+        prevSales,
+        curSales,
+      ),
+      prevProducts: prevProducts,
+      currentProducts: curProducts,
+      prevSales: prevSales,
+      currentSales: curSales,
+    );
+  }
+
+  CloudBackupShrinkException? detectRemoteCatalogShrinkAnomaly(
+    int remoteProductsCount,
+  ) {
+    if (remoteProductsCount <= 0) return null;
+    final curProducts = products.length;
+    final isEmptyOverPopulated = curProducts == 0 && remoteProductsCount > 0;
+    final isNearlyEmptyOverPopulated =
+        curProducts <= 3 && remoteProductsCount >= 5;
+    final isSharpDrop = remoteProductsCount >= 10 &&
+        remoteProductsCount - curProducts >= 5 &&
+        curProducts <= remoteProductsCount * 0.5;
+    if (!isEmptyOverPopulated &&
+        !isNearlyEmptyOverPopulated &&
+        !isSharpDrop) {
+      return null;
+    }
+    return CloudBackupShrinkException(
+      message: strings.remoteCatalogOverwriteBlockedMsg(
+        remoteProductsCount,
+        curProducts,
+      ),
+      prevProducts: remoteProductsCount,
+      currentProducts: curProducts,
+      prevSales:
+          _lastCloudBackupSalesCount < 0 ? 0 : _lastCloudBackupSalesCount,
+      currentSales: sales.length,
+    );
+  }
+
+  String _formatConflictTimestamp(DateTime dt) {
+    final l = dt.toLocal();
+    final d = l.day.toString().padLeft(2, '0');
+    final m = l.month.toString().padLeft(2, '0');
+    final h = l.hour.toString().padLeft(2, '0');
+    final min = l.minute.toString().padLeft(2, '0');
+    return '$d.$m.${l.year} $h:$min';
+  }
+
+  DateTime? get latestLocalDataAt {
+    DateTime? latest = DateTime.tryParse(_lastAutoBackupAt);
+    void consider(DateTime? dt) {
+      if (dt == null) return;
+      if (latest == null || dt.isAfter(latest!)) {
+        latest = dt;
+      }
+    }
+
+    for (final p in _products) {
+      consider(p.updatedAt);
+    }
+    for (final s in _sales) {
+      consider(s.createdAt);
+      consider(s.paidAt);
+    }
+    for (final r in _stockIns) {
+      consider(r.createdAt);
+    }
+    for (final e in _expenses) {
+      consider(e.createdAt);
+    }
+    for (final c in _productChanges) {
+      consider(c.createdAt);
+    }
+    return latest;
+  }
+
+  CloudTimestampConflictException? detectCloudNewerThanLocal({
+    DateTime? remoteBackupUpdatedAt,
+    DateTime? remoteCatalogUpdatedAt,
+  }) {
+    DateTime? effectiveRemote = remoteBackupUpdatedAt;
+    if (remoteCatalogUpdatedAt != null &&
+        (effectiveRemote == null ||
+            remoteCatalogUpdatedAt.isAfter(effectiveRemote))) {
+      effectiveRemote = remoteCatalogUpdatedAt;
+    }
+    if (effectiveRemote == null) return null;
+
+    final localSyncAt = DateTime.tryParse(_lastAutoBackupAt);
+    final isStale = localSyncAt == null
+        ? remoteBackupUpdatedAt != null
+        : effectiveRemote.isAfter(
+            localSyncAt.add(const Duration(seconds: 10)),
+          );
+    if (!isStale) return null;
+
+    final cloudStr = _formatConflictTimestamp(effectiveRemote);
+    final localStr = localSyncAt != null
+        ? _formatConflictTimestamp(localSyncAt)
+        : strings.neverSyncedLabel;
+    return CloudTimestampConflictException(
+      message: strings.cloudNewerOverwriteBlockedMsg(cloudStr, localStr),
+      remoteUpdatedAt: effectiveRemote,
+      localLastSyncAt: localSyncAt,
+      latestLocalDataAt: latestLocalDataAt,
+      isCloudNewer: true,
+    );
+  }
+
+  CloudTimestampConflictException? detectLocalNewerThanCloud({
+    DateTime? remoteBackupUpdatedAt,
+  }) {
+    if (remoteBackupUpdatedAt == null) return null;
+    final localLatest = latestLocalDataAt;
+    if (localLatest == null) return null;
+    if (!localLatest.isAfter(
+      remoteBackupUpdatedAt.add(const Duration(minutes: 1)),
+    )) {
+      return null;
+    }
+    return CloudTimestampConflictException(
+      message: strings.localNewerRestoreWarningMsg(
+        _formatConflictTimestamp(localLatest),
+        _formatConflictTimestamp(remoteBackupUpdatedAt),
+      ),
+      remoteUpdatedAt: remoteBackupUpdatedAt,
+      localLastSyncAt: DateTime.tryParse(_lastAutoBackupAt),
+      latestLocalDataAt: localLatest,
+      isCloudNewer: false,
+    );
+  }
+
+  Future<void> markCloudCatalogPushed() async {
+    _lastAutoBackupAt = DateTime.now().toIso8601String();
+    _lastCloudBackupProductsCount = products.length;
+    _lastCloudBackupSalesCount = sales.length;
+    recordSheetCatalogBaseline();
+    notifyListeners();
+    _suppressAutoBackup = true;
+    try {
+      await _storage.save(createBackupSnapshot());
+    } finally {
+      _suppressAutoBackup = false;
+    }
+  }
+
+  static const List<SheetExportSection> instantReadableSections = [
+    SheetExportSection.sales,
+  ];
+
+  static String _dayKey(DateTime dt) {
+    final l = dt.toLocal();
+    return '${l.year.toString().padLeft(4, '0')}-${l.month.toString().padLeft(2, '0')}-${l.day.toString().padLeft(2, '0')}';
+  }
+
+  bool isDailySectionsSyncDue({DateTime? now}) {
+    final key = _dayKey(now ?? DateTime.now());
+    return _cloudBackupHashes['sheet_daily_date'] != key;
+  }
+
+  List<SheetExportSection> readableSectionsForSync({
+    required bool forceFull,
+    DateTime? now,
+  }) {
+    if (forceFull || isDailySectionsSyncDue(now: now)) {
+      return SheetExportSection.values;
+    }
+    return instantReadableSections;
+  }
+
+  void markDailySectionsSynced({DateTime? now}) {
+    _cloudBackupHashes['sheet_daily_date'] = _dayKey(now ?? DateTime.now());
+  }
+
   Future<int> syncCloudBackupDelta({
     bool forceFull = false,
     bool syncReadableSheets = true,
+    bool allowShrinkOverride = false,
+    bool allowTimestampOverride = false,
   }) async {
     final url = _googleSheetsUrl.trim();
     if (url.isEmpty) return 0;
+    await ensureFullHistoryLoaded();
     if (!forceFull &&
         products.isEmpty &&
         sales.isEmpty &&
@@ -1283,6 +1964,38 @@ class ShopController extends ChangeNotifier {
         customers.isEmpty &&
         stockIns.isEmpty) {
       return 0;
+    }
+    const service = GoogleSheetsService();
+    if (!allowShrinkOverride && !_bulkDeleteAuthorized) {
+      final anomaly = detectCloudBackupShrinkAnomaly();
+      if (anomaly != null) {
+        throw anomaly;
+      }
+      if (_lastCloudBackupProductsCount < 0 || products.length <= 3) {
+        final remoteProducts = await service.fetchProducts(
+          url,
+          secret: _googleSheetsSecret,
+        );
+        final remoteAnomaly = detectRemoteCatalogShrinkAnomaly(
+          GoogleSheetsService.deduplicateProducts(remoteProducts).length,
+        );
+        if (remoteAnomaly != null) {
+          throw remoteAnomaly;
+        }
+      }
+    }
+    if (!allowTimestampOverride) {
+      final meta = await service.fetchCloudBackupMeta(
+        url,
+        secret: _googleSheetsSecret,
+      );
+      final tsConflict = detectCloudNewerThanLocal(
+        remoteBackupUpdatedAt: meta.updatedAt,
+        remoteCatalogUpdatedAt: meta.catalogUpdatedAt,
+      );
+      if (tsConflict != null) {
+        throw tsConflict;
+      }
     }
 
     final shouldPullFirst = syncReadableSheets &&
@@ -1311,7 +2024,6 @@ class ShopController extends ChangeNotifier {
       (snapshot: snapshot, prevHashes: prevBackupHashes, forceFull: forceFull),
     );
 
-    const service = GoogleSheetsService();
     var totalUpdated = 0;
 
     final productHashParts = prepared.newHashes.entries
@@ -1342,6 +2054,8 @@ class ShopController extends ChangeNotifier {
       });
     }
 
+    final syncNow = DateTime.now();
+    var dailyMarkedNow = false;
     if (syncReadableSheets) {
       if ((forceFull || _cloudBackupHashes['sheet_catalog'] != catalogHash) &&
           (forceFull || products.isNotEmpty)) {
@@ -1358,7 +2072,11 @@ class ShopController extends ChangeNotifier {
         });
       }
 
-      for (final section in SheetExportSection.values) {
+      final includeDailySections =
+          forceFull || isDailySectionsSyncDue(now: syncNow);
+      final targetSections =
+          readableSectionsForSync(forceFull: forceFull, now: syncNow);
+      for (final section in targetSections) {
         final table = SheetExportHelper.buildTable(section, this);
         final tableHash = GoogleSheetsService.hashText(jsonEncode(table.rows));
         final hashKey = 'sheet_${section.name}';
@@ -1385,6 +2103,10 @@ class ShopController extends ChangeNotifier {
             : uploadTasks.length;
         await Future.wait(uploadTasks.sublist(i, end).map((t) => t()));
       }
+      if (includeDailySections) {
+        markDailySectionsSynced(now: syncNow);
+        dailyMarkedNow = true;
+      }
     } else {
       for (final task in uploadTasks) {
         await task();
@@ -1395,11 +2117,24 @@ class ShopController extends ChangeNotifier {
         _cloudBackupHashes['sheet_${section.name}'] =
             GoogleSheetsService.hashText(jsonEncode(table.rows));
       }
+      markDailySectionsSynced(now: syncNow);
+      dailyMarkedNow = true;
     }
 
     _lastAutoBackupError = '';
-    if (totalUpdated > 0 || forceFull) {
-      _lastAutoBackupAt = DateTime.now().toIso8601String();
+    final shouldSaveMeta = totalUpdated > 0 ||
+        forceFull ||
+        dailyMarkedNow ||
+        _lastCloudBackupProductsCount < 0 ||
+        _pendingSync;
+    if (shouldSaveMeta) {
+      _lastCloudBackupProductsCount = products.length;
+      _lastCloudBackupSalesCount = sales.length;
+      _bulkDeleteAuthorized = false;
+      _pendingSync = false;
+      if (totalUpdated > 0 || forceFull) {
+        _lastAutoBackupAt = DateTime.now().toIso8601String();
+      }
       notifyListeners();
       _suppressAutoBackup = true;
       try {
@@ -1415,6 +2150,19 @@ class ShopController extends ChangeNotifier {
     if (_autoBackupEnabled == value) return;
     _autoBackupEnabled = value;
     notifyListeners();
+    await _persist();
+  }
+
+  Future<void> markExternalBackupSaved() async {
+    final nowIso = DateTime.now().toIso8601String();
+    _lastExternalBackupAt = nowIso;
+    _lastExternalBackupReminderAt = nowIso;
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> snoozeExternalBackupReminder() async {
+    _lastExternalBackupReminderAt = DateTime.now().toIso8601String();
     await _persist();
   }
 
@@ -1501,6 +2249,17 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
+  bool verifyOwnerPin(String pinAttempt) {
+    if (_ownerPin.isEmpty) return false;
+    return pinAttempt.trim() == _ownerPin;
+  }
+
+  bool _canMutateOrDeleteSale(String? ownerPinAttempt) {
+    if (!_cashierMode) return true;
+    if (ownerPinAttempt == null) return false;
+    return verifyOwnerPin(ownerPinAttempt);
+  }
+
   Future<bool> exitCashierMode(String pinAttempt) async {
     if (_ownerPin.isNotEmpty && pinAttempt.trim() != _ownerPin) {
       return false;
@@ -1525,6 +2284,13 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
+  Future<void> setAllowCashierDiscounts(bool value) async {
+    if (_allowCashierDiscounts == value) return;
+    _allowCashierDiscounts = value;
+    notifyListeners();
+    await _persist();
+  }
+
   Future<void> setGoogleSheetsConfig({
     required String url,
     required String secret,
@@ -1538,7 +2304,12 @@ class ShopController extends ChangeNotifier {
   String _fmtNum(double v) =>
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
 
-  void _recordProductChange(Product before, Product after, String source) {
+  void _recordProductChange(
+    Product before,
+    Product after,
+    String source, {
+    DateTime? now,
+  }) {
     final fields = <ProductChangeField>[];
     if ((before.sellPrice - after.sellPrice).abs() > 0.009) {
       fields.add(
@@ -1570,6 +2341,17 @@ class ShopController extends ChangeNotifier {
           label: strings.wholesaleShort,
           oldValue: _fmtNum(before.wholesalePrice),
           newValue: _fmtNum(after.wholesalePrice),
+        ),
+      );
+    }
+    if (before.wholesaleMinQty != after.wholesaleMinQty) {
+      fields.add(
+        ProductChangeField(
+          key: 'wholesaleMinQty',
+          kind: 'other',
+          label: strings.wholesaleMinQtyLabel,
+          oldValue: '${before.wholesaleMinQty}',
+          newValue: '${after.wholesaleMinQty}',
         ),
       );
     }
@@ -1724,11 +2506,12 @@ class ShopController extends ChangeNotifier {
         productName: after.name,
         source: source,
         fields: fields,
-        createdAt: DateTime.now(),
+        createdAt: now ?? DateTime.now(),
       ),
     );
   }
 
+  static const int inMemoryChangeHistoryDays = 90;
   static const int changeHistoryRetentionDays = 1827;
 
   List<ProductChangeEntry> productChangesForDays(int days) {
@@ -1736,6 +2519,25 @@ class ShopController extends ChangeNotifier {
     return _productChanges
         .where((e) => !e.createdAt.isBefore(cutoff))
         .toList(growable: false);
+  }
+
+  Future<List<ProductChangeEntry>> loadProductChanges({int? days}) async {
+    if (days != null && days <= inMemoryChangeHistoryDays) {
+      return productChangesForDays(days);
+    }
+    final stored = await _storage.loadProductChanges(days: days);
+    final mergedById = <String, ProductChangeEntry>{
+      for (final e in stored) e.id: e,
+      for (final e in _productChanges) e.id: e,
+    };
+    final cutoff = (days != null && days > 0)
+        ? DateTime.now().subtract(Duration(days: days))
+        : null;
+    final result = mergedById.values
+        .where((e) => cutoff == null || !e.createdAt.isBefore(cutoff))
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
   }
 
   List<ProductChangeEntry> priceChangesForProduct(String productId) {
@@ -1751,11 +2553,81 @@ class ShopController extends ChangeNotifier {
         .toList(growable: false);
   }
 
+  Future<List<ProductChangeEntry>> loadPriceChangesForProduct(
+    String productId,
+  ) async {
+    final stored = await _storage.loadProductChanges(
+      days: changeHistoryRetentionDays,
+      productId: productId,
+      priceOnly: true,
+    );
+    final mergedById = <String, ProductChangeEntry>{
+      for (final e in stored) e.id: e,
+      for (final e in priceChangesForProduct(productId)) e.id: e,
+    };
+    final result = mergedById.values.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
+  }
+
+  static const Duration changeCoalesceWindow = Duration(minutes: 2);
+
   void _appendProductChange(ProductChangeEntry entry) {
+    if (entry.source == 'edit') {
+      final existingIdx = _productChanges.indexWhere((e) {
+        if (e.productId != entry.productId || e.source != 'edit') return false;
+        return entry.createdAt.difference(e.createdAt).abs() <=
+            changeCoalesceWindow;
+      });
+      if (existingIdx != -1) {
+        final existing = _productChanges[existingIdx];
+        final mergedFields = List<ProductChangeField>.from(existing.fields);
+        for (final inc in entry.fields) {
+          final incId = inc.key.isNotEmpty ? inc.key : inc.label;
+          final idx = mergedFields.indexWhere(
+            (f) => (f.key.isNotEmpty ? f.key : f.label) == incId,
+          );
+          if (idx != -1) {
+            final prev = mergedFields[idx];
+            if (prev.oldValue == inc.newValue) {
+              mergedFields.removeAt(idx);
+            } else {
+              mergedFields[idx] = ProductChangeField(
+                key: inc.key.isNotEmpty ? inc.key : prev.key,
+                kind: inc.kind,
+                label: inc.label,
+                oldValue: prev.oldValue,
+                newValue: inc.newValue,
+              );
+            }
+          } else {
+            mergedFields.add(inc);
+          }
+        }
+        _productChanges.removeAt(existingIdx);
+        if (mergedFields.isNotEmpty) {
+          _productChanges.insert(
+            0,
+            ProductChangeEntry(
+              id: existing.id,
+              productId: existing.productId,
+              productName: entry.productName,
+              source: existing.source,
+              fields: mergedFields,
+              createdAt: entry.createdAt,
+            ),
+          );
+        }
+        final memoryCutoff = DateTime.now()
+            .subtract(const Duration(days: inMemoryChangeHistoryDays));
+        _productChanges.removeWhere((e) => e.createdAt.isBefore(memoryCutoff));
+        return;
+      }
+    }
     _productChanges.insert(0, entry);
-    final fiveYearsAgo =
-        DateTime.now().subtract(const Duration(days: changeHistoryRetentionDays));
-    _productChanges.removeWhere((e) => e.createdAt.isBefore(fiveYearsAgo));
+    final memoryCutoff =
+        DateTime.now().subtract(const Duration(days: inMemoryChangeHistoryDays));
+    _productChanges.removeWhere((e) => e.createdAt.isBefore(memoryCutoff));
   }
 
   void _recordProductCreated(Product product, String source) {
@@ -1828,18 +2700,27 @@ class ShopController extends ChangeNotifier {
       final cutoff = DateTime.now().subtract(Duration(days: olderThanDays));
       _productChanges.removeWhere((e) => e.createdAt.isBefore(cutoff));
     }
-    final removed = before - _productChanges.length;
-    if (removed > 0) {
+    final removedInMemory = before - _productChanges.length;
+    final removedInDb = await _storage.deleteProductChanges(
+      olderThanDays: olderThanDays,
+    );
+    final removed = removedInDb > removedInMemory ? removedInDb : removedInMemory;
+    if (removedInMemory > 0) {
       notifyListeners();
       await _persist();
+    } else if (removedInDb > 0) {
+      notifyListeners();
     }
     return removed;
   }
 
-  Future<bool> revertProductChange(String changeId) async {
+  Future<bool> revertProductChange(
+    String changeId, {
+    ProductChangeEntry? fallbackEntry,
+  }) async {
     final entryIdx = _productChanges.indexWhere((e) => e.id == changeId);
-    if (entryIdx == -1) return false;
-    final entry = _productChanges[entryIdx];
+    final entry = entryIdx != -1 ? _productChanges[entryIdx] : fallbackEntry;
+    if (entry == null) return false;
     final productIdx = _products.indexWhere((p) => p.id == entry.productId);
     if (productIdx == -1 || !_products[productIdx].isActive) return false;
 
@@ -1858,8 +2739,11 @@ class ShopController extends ChangeNotifier {
         case 'wholesalePrice':
           final v = double.tryParse(rawOld.replaceAll(',', '.'));
           if (v != null && v >= 0) next = next.copyWith(wholesalePrice: v);
-        case 'stock':
+        case 'wholesaleMinQty':
           final v = int.tryParse(rawOld);
+          if (v != null && v >= 0) next = next.copyWith(wholesaleMinQty: v);
+        case 'stock':
+          final v = double.tryParse(rawOld.replaceAll(',', '.'));
           if (v != null && v >= 0) next = next.copyWith(stock: v);
         case 'unitWeight':
           next = next.copyWith(unitWeight: rawOld);
@@ -1902,6 +2786,7 @@ class ShopController extends ChangeNotifier {
     if (f.label == strings.sellShort) return 'sellPrice';
     if (f.label == strings.costShort) return 'costPrice';
     if (f.label == strings.wholesaleShort) return 'wholesalePrice';
+    if (f.label == strings.wholesaleMinQtyLabel) return 'wholesaleMinQty';
     if (f.kind == 'stock') return 'stock';
     if (f.kind == 'weight') return 'unitWeight';
     if (f.label == strings.categoryLabel) return 'category';
@@ -2059,20 +2944,363 @@ class ShopController extends ChangeNotifier {
     }
   }
 
-  int get totalStockUnits =>
-      products.fold(0, (sum, product) => sum + product.stock);
+  ({double units, double costValue, double sellValue, List<Product> lowStock})
+      _ensureInventoryTotals() {
+    final cached = _cachedInventoryTotals;
+    if (cached != null) return cached;
+    var units = 0.0;
+    var costValue = 0.0;
+    var sellValue = 0.0;
+    final lowStock = <Product>[];
+    for (final product in products) {
+      units += product.stock;
+      costValue += product.inventoryValue;
+      sellValue += product.potentialRevenue;
+      if (product.isLowStock || product.isOutOfStock) {
+        lowStock.add(product);
+      }
+    }
+    final computed = (
+      units: units,
+      costValue: costValue,
+      sellValue: sellValue,
+      lowStock: List<Product>.unmodifiable(lowStock),
+    );
+    _cachedInventoryTotals = computed;
+    return computed;
+  }
 
-  double get totalInventoryCostValue =>
-      products.fold(0.0, (sum, product) => sum + product.inventoryValue);
+  Map<String, double> get soldUnitsByProduct {
+    final cached = _cachedSoldUnitsByProduct;
+    if (cached != null) return cached;
+    final counts = <String, double>{};
+    for (final sale in sales) {
+      for (final item in sale.items) {
+        counts[item.productId] = (counts[item.productId] ?? 0) + item.quantity;
+      }
+    }
+    final unmodifiable = Map<String, double>.unmodifiable(counts);
+    _cachedSoldUnitsByProduct = unmodifiable;
+    return unmodifiable;
+  }
 
-  double get totalPotentialRevenue =>
-      products.fold(0.0, (sum, product) => sum + product.potentialRevenue);
+  Map<String, double> _dailySalesPaceByProduct({
+    int windowDays = 30,
+    DateTime? now,
+  }) {
+    final current = now ?? DateTime.now();
+    final cutoff = current.subtract(Duration(days: windowDays));
+    final unitsInWindow = <String, double>{};
+    DateTime? earliestSale;
 
-  List<Product> get lowStockProducts => products
-      .where((product) => product.isLowStock || product.isOutOfStock)
-      .toList();
+    for (final sale in sales) {
+      if (sale.createdAt.isBefore(cutoff)) continue;
+      if (earliestSale == null || sale.createdAt.isBefore(earliestSale)) {
+        earliestSale = sale.createdAt;
+      }
+      for (final item in sale.items) {
+        if (item.quantity <= 0) continue;
+        unitsInWindow[item.productId] =
+            (unitsInWindow[item.productId] ?? 0) + item.quantity;
+      }
+    }
+
+    if (earliestSale == null) return const {};
+
+    final observedDays = (current.difference(earliestSale).inDays + 1)
+        .clamp(1, windowDays);
+    final result = <String, double>{};
+    for (final entry in unitsInWindow.entries) {
+      if (entry.value < 3) continue;
+      final dailyPace = entry.value / observedDays;
+      if (dailyPace > 0) {
+        result[entry.key] = dailyPace;
+      }
+    }
+    return result;
+  }
+
+  Map<String, int> estimatedDaysOfStockByProduct({
+    int windowDays = 30,
+    DateTime? now,
+  }) {
+    if (now == null && windowDays == 30 && _cachedDaysOfStockLeft != null) {
+      return _cachedDaysOfStockLeft!;
+    }
+    final paceByProduct =
+        _dailySalesPaceByProduct(windowDays: windowDays, now: now);
+    if (paceByProduct.isEmpty) {
+      if (now == null && windowDays == 30) {
+        _cachedDaysOfStockLeft = const {};
+      }
+      return const {};
+    }
+
+    final result = <String, int>{};
+    for (final p in products) {
+      if (p.stock <= 0) continue;
+      final dailyPace = paceByProduct[p.id];
+      if (dailyPace == null || dailyPace <= 0) continue;
+      final estDays = (p.stock / dailyPace).round();
+      if (estDays <= 30) {
+        result[p.id] = estDays < 1 ? 1 : estDays;
+      }
+    }
+
+    final unmodifiable = Map<String, int>.unmodifiable(result);
+    if (now == null && windowDays == 30) {
+      _cachedDaysOfStockLeft = unmodifiable;
+    }
+    return unmodifiable;
+  }
+
+  double get totalStockUnits => _ensureInventoryTotals().units;
+
+  double get totalInventoryCostValue => _ensureInventoryTotals().costValue;
+
+  double get totalPotentialRevenue => _ensureInventoryTotals().sellValue;
+
+  List<Product> get lowStockProducts => _ensureInventoryTotals().lowStock;
 
   int get lowStockCount => lowStockProducts.length;
+
+  List<
+      ({
+        Product product,
+        double suggestedQty,
+        String lastSupplier,
+        int? daysLeft,
+      })> buildPurchaseOrderSuggestions({
+    int velocityThresholdDays = 7,
+    int targetCoverageDays = 14,
+    DateTime? now,
+  }) {
+    final lastSupplierByProduct = <String, String>{};
+    for (final rec in _stockIns) {
+      final sup = rec.supplierName.trim();
+      if (sup.isEmpty) continue;
+      for (final item in rec.items) {
+        lastSupplierByProduct.putIfAbsent(item.productId, () => sup);
+      }
+    }
+
+    final paceByProduct = _dailySalesPaceByProduct(now: now);
+    final daysLeftByProduct = estimatedDaysOfStockByProduct(now: now);
+
+    final result = <({
+      Product product,
+      double suggestedQty,
+      String lastSupplier,
+      int? daysLeft,
+    })>[];
+
+    for (final p in products) {
+      final isThresholdLow = p.isLowStock || p.isOutOfStock;
+      final daysLeft = daysLeftByProduct[p.id];
+      final isVelocityLow =
+          p.stock > 0 && daysLeft != null && daysLeft <= velocityThresholdDays;
+      if (!isThresholdLow && !isVelocityLow) continue;
+
+      final targetLevel =
+          (p.lowStockThreshold > 0 ? p.lowStockThreshold * 2 : 5).toDouble();
+      double suggested;
+      if (p.stock < 0) {
+        suggested = -p.stock + targetLevel;
+      } else if (p.stock == 0) {
+        suggested = targetLevel;
+      } else if (isThresholdLow) {
+        suggested = (targetLevel - p.stock).clamp(1.0, 999999.0);
+      } else {
+        suggested = 1.0;
+      }
+
+      final dailyPace = paceByProduct[p.id];
+      if (dailyPace != null && dailyPace > 0) {
+        final velocityTarget = (dailyPace * targetCoverageDays).ceilToDouble();
+        final velocitySuggested = p.stock < 0
+            ? (-p.stock + velocityTarget)
+            : (velocityTarget - p.stock).clamp(1.0, 999999.0);
+        if (velocitySuggested > suggested) {
+          suggested = velocitySuggested;
+        }
+      }
+
+      result.add((
+        product: p,
+        suggestedQty: suggested,
+        lastSupplier: lastSupplierByProduct[p.id] ?? '',
+        daysLeft: daysLeft,
+      ));
+    }
+
+    result.sort((a, b) {
+      final aOut = a.product.stock <= 0 ? 0 : 1;
+      final bOut = b.product.stock <= 0 ? 0 : 1;
+      if (aOut != bOut) return aOut.compareTo(bOut);
+      final aDays = a.daysLeft ?? 9999;
+      final bDays = b.daysLeft ?? 9999;
+      if (aDays != bDays) return aDays.compareTo(bDays);
+      return a.product.name
+          .toLowerCase()
+          .compareTo(b.product.name.toLowerCase());
+    });
+    return result;
+  }
+
+  List<StockInRecord> get unpaidStockIns =>
+      _stockIns.where((r) => !r.isPaid).toList(growable: false);
+
+  double get totalSupplierDebt =>
+      unpaidStockIns.fold(0.0, (sum, r) => sum + r.remainingDebt);
+
+  List<
+      ({
+        String name,
+        int invoicesCount,
+        double totalSpend,
+        double totalDebt,
+        DateTime lastDeliveryAt,
+        int uniqueProductsCount,
+        List<StockInRecord> invoices,
+      })> buildSupplierDirectory() {
+    final sorted = List<StockInRecord>.from(_stockIns)
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    final byKey = <String,
+        ({
+      String name,
+      double totalSpend,
+      double totalDebt,
+      DateTime lastDeliveryAt,
+      Set<String> productIds,
+      List<StockInRecord> invoices,
+    })>{};
+
+    for (final rec in sorted) {
+      final rawName = rec.supplierName.trim();
+      if (rawName.isEmpty && rec.isPaid) continue;
+      final key = rawName.toLowerCase();
+      final existing = byKey[key];
+      if (existing == null) {
+        byKey[key] = (
+          name: rawName,
+          totalSpend: rec.totalCost,
+          totalDebt: rec.remainingDebt,
+          lastDeliveryAt: rec.createdAt,
+          productIds: {for (final item in rec.items) item.productId},
+          invoices: [rec],
+        );
+      } else {
+        existing.productIds.addAll(rec.items.map((i) => i.productId));
+        existing.invoices.add(rec);
+        byKey[key] = (
+          name: existing.name,
+          totalSpend: existing.totalSpend + rec.totalCost,
+          totalDebt: existing.totalDebt + rec.remainingDebt,
+          lastDeliveryAt: existing.lastDeliveryAt.isAfter(rec.createdAt)
+              ? existing.lastDeliveryAt
+              : rec.createdAt,
+          productIds: existing.productIds,
+          invoices: existing.invoices,
+        );
+      }
+    }
+
+    final result = [
+      for (final entry in byKey.values)
+        (
+          name: entry.name,
+          invoicesCount: entry.invoices.length,
+          totalSpend: entry.totalSpend,
+          totalDebt: entry.totalDebt,
+          lastDeliveryAt: entry.lastDeliveryAt,
+          uniqueProductsCount: entry.productIds.length,
+          invoices: List<StockInRecord>.unmodifiable(entry.invoices),
+        ),
+    ];
+    result.sort((a, b) {
+      final aHasDebt = a.totalDebt > 0.009 ? 0 : 1;
+      final bHasDebt = b.totalDebt > 0.009 ? 0 : 1;
+      if (aHasDebt != bHasDebt) return aHasDebt.compareTo(bHasDebt);
+      final debtCmp = b.totalDebt.compareTo(a.totalDebt);
+      if (debtCmp != 0) return debtCmp;
+      return b.lastDeliveryAt.compareTo(a.lastDeliveryAt);
+    });
+    return result;
+  }
+
+  List<
+      ({
+        String productId,
+        String productName,
+        String cheapestSupplier,
+        double cheapestPrice,
+        DateTime cheapestDate,
+        List<({String supplierName, double lastPrice, DateTime date})> quotes,
+      })> buildCheapestSupplierByProduct() {
+    final sorted = List<StockInRecord>.from(_stockIns)
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    final productNames = <String, String>{};
+    final latestQuotes =
+        <String, Map<String, ({String supplierName, double lastPrice, DateTime date})>>{};
+
+    for (final rec in sorted) {
+      final supplier = rec.supplierName.trim();
+      if (supplier.isEmpty) continue;
+      final supKey = supplier.toLowerCase();
+      for (final item in rec.items) {
+        if (item.unitCost <= 0) continue;
+        productNames.putIfAbsent(
+          item.productId,
+          () => findProductById(item.productId)?.name ?? item.productName,
+        );
+        final bySup = latestQuotes.putIfAbsent(item.productId, () => {});
+        bySup.putIfAbsent(
+          supKey,
+          () => (
+            supplierName: supplier,
+            lastPrice: item.unitCost,
+            date: rec.createdAt,
+          ),
+        );
+      }
+    }
+
+    final result = <({
+      String productId,
+      String productName,
+      String cheapestSupplier,
+      double cheapestPrice,
+      DateTime cheapestDate,
+      List<({String supplierName, double lastPrice, DateTime date})> quotes,
+    })>[];
+
+    for (final entry in latestQuotes.entries) {
+      final quotes = entry.value.values.toList()
+        ..sort((a, b) => a.lastPrice.compareTo(b.lastPrice));
+      if (quotes.isEmpty) continue;
+      final best = quotes.first;
+      result.add((
+        productId: entry.key,
+        productName: productNames[entry.key] ?? '',
+        cheapestSupplier: best.supplierName,
+        cheapestPrice: best.lastPrice,
+        cheapestDate: best.date,
+        quotes: List.unmodifiable(quotes),
+      ));
+    }
+
+    result.sort((a, b) {
+      final aMulti = a.quotes.length >= 2 ? 0 : 1;
+      final bMulti = b.quotes.length >= 2 ? 0 : 1;
+      if (aMulti != bMulti) return aMulti.compareTo(bMulti);
+      return a.productName
+          .toLowerCase()
+          .compareTo(b.productName.toLowerCase());
+    });
+    return result;
+  }
 
   List<Sale> get unpaidSales =>
       sales.where((sale) => !sale.isPaid).toList();
@@ -2241,18 +3469,39 @@ class ShopController extends ChangeNotifier {
     String note = '',
     CustomerSegment segment = CustomerSegment.retail,
   }) async {
-    final cleanName = name.trim();
+    final cleanName = InputNormalizer.normalizeDisplayName(name);
     if (cleanName.isEmpty) return;
+    final cleanPhone = InputNormalizer.normalizePhone(phone);
+    final cleanNote = InputNormalizer.normalizeDisplayName(note);
+    final normNameKey = InputNormalizer.normalizeNameKey(cleanName);
     _hiddenCustomerSuggestions.remove(cleanName.toLowerCase());
-    final customer = Customer(
-      id: _nextId('cus'),
-      name: cleanName,
-      phone: phone.trim(),
-      note: note.trim(),
-      segment: segment,
-      createdAt: DateTime.now(),
-    );
-    _customers.add(customer);
+
+    final existingIdx = _customers.indexWhere((c) {
+      if (cleanPhone.isNotEmpty &&
+          InputNormalizer.normalizePhone(c.phone) == cleanPhone) {
+        return true;
+      }
+      return InputNormalizer.normalizeNameKey(c.name) == normNameKey;
+    });
+    if (existingIdx != -1) {
+      final existing = _customers[existingIdx];
+      _customers[existingIdx] = existing.copyWith(
+        name: cleanName,
+        phone: cleanPhone.isNotEmpty ? cleanPhone : existing.phone,
+        note: cleanNote.isNotEmpty ? cleanNote : existing.note,
+        segment: segment,
+      );
+    } else {
+      final customer = Customer(
+        id: _nextId('cus'),
+        name: cleanName,
+        phone: cleanPhone,
+        note: cleanNote,
+        segment: segment,
+        createdAt: DateTime.now(),
+      );
+      _customers.add(customer);
+    }
     _customers.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     notifyListeners();
     await _persist();
@@ -2265,15 +3514,15 @@ class ShopController extends ChangeNotifier {
     String note = '',
     CustomerSegment? segment,
   }) async {
-    final cleanName = name.trim();
+    final cleanName = InputNormalizer.normalizeDisplayName(name);
     if (cleanName.isEmpty) return;
     final index = _customers.indexWhere((c) => c.id == customerId);
     if (index == -1) return;
     _hiddenCustomerSuggestions.remove(cleanName.toLowerCase());
     _customers[index] = _customers[index].copyWith(
       name: cleanName,
-      phone: phone.trim(),
-      note: note.trim(),
+      phone: InputNormalizer.normalizePhone(phone),
+      note: InputNormalizer.normalizeDisplayName(note),
       segment: segment,
     );
     _customers.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
@@ -2463,7 +3712,7 @@ class ShopController extends ChangeNotifier {
   }
 
   List<TopProductStat> topSellingProducts(SalesDateFilter filter) {
-    final units = <String, int>{};
+    final units = <String, double>{};
     final rev = <String, double>{};
     final prof = <String, double>{};
     final names = <String, String>{};
@@ -2505,6 +3754,62 @@ class ShopController extends ChangeNotifier {
         .toList();
   }
 
+  ({
+    List<FrozenCashItem> items,
+    int totalCount,
+    double totalFrozenValue,
+  }) frozenCashSummary({
+    int minIdleDays = 30,
+    int? maxIdleDays,
+    int limit = 10,
+    DateTime? now,
+  }) {
+    final current = now ?? DateTime.now();
+    final lastSoldByProduct = <String, DateTime>{};
+    for (final sale in sales) {
+      for (final item in sale.items) {
+        if (item.quantity <= 0) continue;
+        final prev = lastSoldByProduct[item.productId];
+        if (prev == null || sale.createdAt.isAfter(prev)) {
+          lastSoldByProduct[item.productId] = sale.createdAt;
+        }
+      }
+    }
+
+    final matches = <FrozenCashItem>[];
+    var totalFrozenValue = 0.0;
+    for (final p in products) {
+      if (p.stock <= 0 || p.inventoryValue <= 0) continue;
+      final lastSold = lastSoldByProduct[p.id];
+      final refDate = lastSold ?? p.updatedAt;
+      final daysIdle = current.difference(refDate).inDays;
+      if (daysIdle < minIdleDays) continue;
+      if (maxIdleDays != null && daysIdle > maxIdleDays) continue;
+      totalFrozenValue += p.inventoryValue;
+      matches.add(
+        FrozenCashItem(
+          product: p,
+          frozenValue: p.inventoryValue,
+          potentialRevenue: p.potentialRevenue,
+          daysWithoutSales: daysIdle,
+          hasEverSold: lastSold != null,
+        ),
+      );
+    }
+
+    matches.sort((a, b) {
+      final valCmp = b.frozenValue.compareTo(a.frozenValue);
+      if (valCmp != 0) return valCmp;
+      return b.daysWithoutSales.compareTo(a.daysWithoutSales);
+    });
+
+    return (
+      items: matches.take(limit).toList(growable: false),
+      totalCount: matches.length,
+      totalFrozenValue: totalFrozenValue,
+    );
+  }
+
   List<int> get salesYears {
     final years = <int>{};
     for (final s in sales) {
@@ -2516,7 +3821,7 @@ class ShopController extends ChangeNotifier {
 
   List<SalesTimeBucketStat> salesByMonth({int? year}) {
     final orders = List<int>.filled(12, 0);
-    final units = List<int>.filled(12, 0);
+    final units = List<double>.filled(12, 0.0);
     final revenue = List<double>.filled(12, 0.0);
     final profit = List<double>.filled(12, 0.0);
 
@@ -2543,7 +3848,7 @@ class ShopController extends ChangeNotifier {
 
   List<SalesTimeBucketStat> salesByWeekday(SalesDateFilter filter) {
     final orders = List<int>.filled(7, 0);
-    final units = List<int>.filled(7, 0);
+    final units = List<double>.filled(7, 0.0);
     final revenue = List<double>.filled(7, 0.0);
     final profit = List<double>.filled(7, 0.0);
 
@@ -2569,7 +3874,7 @@ class ShopController extends ChangeNotifier {
 
   List<SalesTimeBucketStat> salesByHour(SalesDateFilter filter) {
     final orders = List<int>.filled(24, 0);
-    final units = List<int>.filled(24, 0);
+    final units = List<double>.filled(24, 0.0);
     final revenue = List<double>.filled(24, 0.0);
     final profit = List<double>.filled(24, 0.0);
 
@@ -2620,7 +3925,7 @@ class ShopController extends ChangeNotifier {
   List<OutOfStockStat> outOfStockAnalytics({int velocityWindowDays = 90}) {
     final now = DateTime.now();
     final cutoff = now.subtract(Duration(days: velocityWindowDays));
-    final unitsInWindow = <String, int>{};
+    final unitsInWindow = <String, double>{};
     DateTime? earliestSaleInWindow;
 
     for (final s in sales) {
@@ -2693,8 +3998,13 @@ class ShopController extends ChangeNotifier {
   List<DailyProductAdvice> dailyProductAdvices() {
     final active = products;
     if (active.isEmpty) return const [];
-    final s = strings;
     final now = DateTime.now();
+    final cacheKey = '${now.year}-${now.month}-${now.day}|${_language.code}';
+    final cached = _cachedDailyAdvices;
+    if (cached != null && _cachedDailyAdvicesKey == cacheKey) {
+      return cached;
+    }
+    final s = strings;
     final advices = <DailyProductAdvice>[];
 
     // 1. Urgent: Best-selling out-of-stock products losing revenue.
@@ -2783,7 +4093,7 @@ class ShopController extends ChangeNotifier {
 
     // 4. Warning: Fast-moving products running low on stock (30-day velocity).
     final cutoff30 = now.subtract(const Duration(days: 30));
-    final units30 = <String, int>{};
+    final units30 = <String, double>{};
     for (final sale in sales) {
       if (sale.createdAt.isBefore(cutoff30)) continue;
       for (final item in sale.items) {
@@ -2863,7 +4173,93 @@ class ShopController extends ChangeNotifier {
       }
     }
 
-    // 7. Info: Products missing barcodes.
+    // 7. Opportunity: Missing regular/wholesale customers (usually buy every 1-2 weeks, quiet >= 28 days).
+    final salesByCustomer = <String, ({String name, List<DateTime> dates, double spent})>{};
+    for (final sale in sales) {
+      final rawName = sale.customerName.trim();
+      final key = rawName.toLowerCase();
+      if (rawName.isEmpty || key == 'unknown') continue;
+      final prev = salesByCustomer[key];
+      if (prev == null) {
+        salesByCustomer[key] = (
+          name: rawName,
+          dates: [sale.createdAt],
+          spent: sale.total,
+        );
+      } else {
+        prev.dates.add(sale.createdAt);
+        salesByCustomer[key] = (
+          name: prev.name,
+          dates: prev.dates,
+          spent: prev.spent + sale.total,
+        );
+      }
+    }
+
+    final missingCustomers = <({
+      String key,
+      String name,
+      int daysSince,
+      int avgGapDays,
+      double spent,
+      bool isVip,
+    })>[];
+    for (final entry in salesByCustomer.entries) {
+      final dates = entry.value.dates..sort();
+      final cust = findCustomerByName(entry.value.name);
+      final isVip = cust != null &&
+          (cust.segment == CustomerSegment.regular ||
+              cust.segment == CustomerSegment.wholesale);
+      final minOrders = isVip ? 2 : 3;
+      if (dates.length < minOrders) continue;
+
+      final daysSince = now.difference(dates.last).inDays;
+      if (daysSince < 28 || daysSince > 180) continue;
+
+      final recentDates =
+          dates.length > 6 ? dates.sublist(dates.length - 6) : dates;
+      final spanDays =
+          recentDates.last.difference(recentDates.first).inDays;
+      final avgGapDays = spanDays / (recentDates.length - 1);
+      if (avgGapDays < 1 || avgGapDays > 21) continue;
+      if (daysSince < avgGapDays * 2) continue;
+
+      missingCustomers.add((
+        key: entry.key,
+        name: entry.value.name,
+        daysSince: daysSince,
+        avgGapDays: avgGapDays.round().clamp(1, 21),
+        spent: entry.value.spent,
+        isVip: isVip,
+      ));
+    }
+    missingCustomers.sort((a, b) {
+      if (a.isVip != b.isVip) return a.isVip ? -1 : 1;
+      return b.spent.compareTo(a.spent);
+    });
+    for (final mc in missingCustomers.take(3)) {
+      advices.add(
+        DailyProductAdvice(
+          id: 'missing_cust_${mc.key.hashCode}',
+          severity: AdviceSeverity.opportunity,
+          title: s.adviceMissingCustomerTitle(mc.name),
+          body: s.adviceMissingCustomerBody(
+            mc.daysSince,
+            mc.avgGapDays,
+            _fmtAdviceMoney(mc.spent),
+          ),
+          customerName: mc.name,
+          customerPhone: customerPhoneByName(mc.name),
+          whatsappMessage: s.missingCustomerWhatsAppMsg(
+            customerName: mc.name,
+            shopName: _shopName,
+          ),
+          actionType: AdviceActionType.messageCustomer,
+        ),
+      );
+    }
+
+    // 8. Info: Products missing barcodes.
     final noBarcode = active.where((p) => p.sku.trim().isEmpty).toList();
     if (noBarcode.isNotEmpty) {
       advices.add(
@@ -2878,7 +4274,10 @@ class ShopController extends ChangeNotifier {
       );
     }
 
-    return advices;
+    final result = List<DailyProductAdvice>.unmodifiable(advices);
+    _cachedDailyAdvices = result;
+    _cachedDailyAdvicesKey = cacheKey;
+    return result;
   }
 
   /// Picks today's featured advice deterministically based on the calendar date,
@@ -3007,7 +4406,7 @@ class ShopController extends ChangeNotifier {
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
       final latestCost = list.first.unitCost;
       final previousCost = list.length > 1 ? list[1].unitCost : null;
-      var totalUnits = 0;
+      var totalUnits = 0.0;
       var totalSpend = 0.0;
       var minCost = list.first.unitCost;
       var maxCost = list.first.unitCost;
@@ -3060,11 +4459,36 @@ class ShopController extends ChangeNotifier {
       if (product.sku.trim().toLowerCase() == normalized ||
           product.packBarcode.trim().toLowerCase() == normalized ||
           product.boxBarcode.trim().toLowerCase() == normalized ||
-          product.nomenclature.trim().toLowerCase() == normalized) {
+          product.nomenclature.trim().toLowerCase() == normalized ||
+          product.extraBarcodes
+              .any((b) => b.trim().toLowerCase() == normalized)) {
         return product;
       }
     }
     return null;
+  }
+
+  Future<Product?> attachBarcodeToProduct(
+    String productId,
+    String rawBarcode,
+  ) async {
+    final code = InputNormalizer.normalizeBarcode(rawBarcode);
+    if (code.isEmpty) return null;
+    final existing = findProductBySku(code);
+    if (existing != null) {
+      return existing.id == productId ? existing : null;
+    }
+    final index = _products.indexWhere((p) => p.id == productId);
+    if (index < 0) return null;
+    final product = _products[index];
+    final updated = product.sku.trim().isEmpty
+        ? product.copyWith(sku: code, updatedAt: DateTime.now())
+        : product.copyWith(
+            extraBarcodes: [...product.extraBarcodes, code],
+            updatedAt: DateTime.now(),
+          );
+    await updateProduct(updated);
+    return findProductById(productId) ?? updated;
   }
 
   static int computeEan13CheckDigit(String first12) {
@@ -3132,30 +4556,35 @@ class ShopController extends ChangeNotifier {
     String boxBarcode = '',
     String unitWeight = '',
     String unit = '',
+    String imagePath = '',
     required double costPrice,
     required double sellPrice,
     double wholesalePrice = 0,
-    required int stock,
+    int wholesaleMinQty = 0,
+    required double stock,
     int lowStockThreshold = 5,
   }) async {
     final now = DateTime.now();
-    final cleanStock = stock < 0 ? 0 : stock;
+    final cleanStock = stock < 0 ? 0.0 : stock;
+    final normCategory = InputNormalizer.normalizeDisplayName(category);
     final product = Product(
       id: _nextId('prd'),
-      name: name.trim(),
-      category: category.trim().isEmpty ? 'General' : category.trim(),
-      sku: sku.trim(),
-      nomenclature: nomenclature.trim(),
-      printName: printName.trim(),
-      packQty: packQty.trim(),
-      boxQty: boxQty.trim(),
-      packBarcode: packBarcode.trim(),
-      boxBarcode: boxBarcode.trim(),
-      unitWeight: unitWeight.trim(),
-      unit: unit.trim(),
+      name: InputNormalizer.normalizeDisplayName(name),
+      category: normCategory.isEmpty ? 'General' : normCategory,
+      sku: InputNormalizer.normalizeBarcode(sku),
+      nomenclature: InputNormalizer.normalizeDisplayName(nomenclature),
+      printName: InputNormalizer.normalizeDisplayName(printName),
+      packQty: InputNormalizer.normalizeDisplayName(packQty),
+      boxQty: InputNormalizer.normalizeDisplayName(boxQty),
+      packBarcode: InputNormalizer.normalizeBarcode(packBarcode),
+      boxBarcode: InputNormalizer.normalizeBarcode(boxBarcode),
+      unitWeight: InputNormalizer.normalizeDisplayName(unitWeight),
+      unit: InputNormalizer.normalizeDisplayName(unit),
+      imagePath: imagePath.trim(),
       costPrice: costPrice,
       sellPrice: sellPrice,
       wholesalePrice: wholesalePrice < 0 ? 0 : wholesalePrice,
+      wholesaleMinQty: wholesaleMinQty < 0 ? 0 : wholesaleMinQty,
       stock: cleanStock,
       lowStockThreshold: lowStockThreshold < 0 ? 0 : lowStockThreshold,
       outOfStockSince: cleanStock <= 0 ? now : null,
@@ -3169,18 +4598,18 @@ class ShopController extends ChangeNotifier {
     return product;
   }
 
-  Future<void> updateProduct(Product updated) async {
+  Future<void> updateProduct(Product updated, {DateTime? at}) async {
     final index = _products.indexWhere((p) => p.id == updated.id);
     if (index == -1) return;
     final before = _products[index];
-    final now = DateTime.now();
+    final now = at ?? DateTime.now();
     final next = _applyStockOutTracking(
       before,
       updated.copyWith(updatedAt: now),
       now,
     );
     _products[index] = next;
-    _recordProductChange(before, next, 'edit');
+    _recordProductChange(before, next, 'edit', now: now);
     _incrementFeatureUsageInMemory(FeatureUsageKeys.productEdit);
     if (!updated.isActive) {
       _cart.remove(updated.id);
@@ -3250,6 +4679,8 @@ class ShopController extends ChangeNotifier {
     double? exchangeRate,
     required List<StockInItem> items,
     bool recordAsExpense = true,
+    bool isCredit = false,
+    double paidAmount = 0,
   }) async {
     if (items.isEmpty) return;
     final now = DateTime.now();
@@ -3273,23 +4704,37 @@ class ShopController extends ChangeNotifier {
         );
         _products[index] = next;
         _recordProductChange(current, next, 'stock_in');
+        if ((next.sellPrice - current.sellPrice).abs() > 0.009 &&
+            !_priceTagQueue.contains(current.id)) {
+          _priceTagQueue.add(current.id);
+        }
       }
     }
 
     final cleanRate =
         (exchangeRate != null && exchangeRate > 0) ? exchangeRate : null;
+    final rawTotalCost = items.fold(0.0, (sum, i) => sum + i.lineTotal);
+    final resolvedPaid =
+        isCredit ? paidAmount.clamp(0.0, rawTotalCost) : rawTotalCost;
     final record = StockInRecord(
       id: _nextId('in'),
       supplierName: supplierName.trim(),
       currencyCode: cleanRate != null ? currencyCode.trim().toUpperCase() : '',
       exchangeRate: cleanRate,
       items: items,
+      isCredit: isCredit,
+      paidAmount: isCredit ? resolvedPaid : 0,
+      paidAt: (isCredit && resolvedPaid >= rawTotalCost - 0.009) ? now : null,
+      paymentHistory: (isCredit && resolvedPaid > 0.009)
+          ? [SupplierDebtPayment(amount: resolvedPaid, paidAt: now)]
+          : const [],
       createdAt: now,
     );
     _stockIns.insert(0, record);
     _stockInDraft = null;
 
-    if (recordAsExpense && record.totalCost > 0) {
+    final expenseAmount = isCredit ? resolvedPaid : record.totalCost;
+    if (recordAsExpense && expenseAmount > 0.009) {
       final label = supplierName.trim().isEmpty
           ? 'Stock-in (${record.totalUnits})'
           : 'Stock-in: ${supplierName.trim()}';
@@ -3299,7 +4744,7 @@ class ShopController extends ChangeNotifier {
           id: _nextId('exp'),
           title: label,
           category: ExpenseCategory.purchase,
-          amount: record.totalCost,
+          amount: expenseAmount,
           createdAt: now,
         ),
       );
@@ -3309,8 +4754,112 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
+  Future<void> recordSupplierPayment(
+    String stockInId,
+    double amount, {
+    bool recordAsExpense = true,
+  }) async {
+    if (amount <= 0) return;
+    final index = _stockIns.indexWhere((s) => s.id == stockInId);
+    if (index == -1) return;
+    final rec = _stockIns[index];
+    if (rec.isPaid) return;
+
+    final currentPaid = rec.effectivePaidAmount;
+    final nextPaid = (currentPaid + amount).clamp(0.0, rec.totalCost);
+    final applied = nextPaid - currentPaid;
+    if (applied <= 0.009) return;
+
+    final now = DateTime.now();
+    final history = List<SupplierDebtPayment>.from(rec.paymentHistory)
+      ..add(SupplierDebtPayment(amount: applied, paidAt: now));
+    _stockIns[index] = rec.copyWith(
+      isCredit: true,
+      paidAmount: nextPaid,
+      paidAt: nextPaid >= rec.totalCost - 0.009 ? now : null,
+      paymentHistory: history,
+    );
+
+    if (recordAsExpense) {
+      _expenses.insert(
+        0,
+        Expense(
+          id: _nextId('exp'),
+          title: strings.supplierDebtRepaymentTitle(rec.supplierName),
+          category: ExpenseCategory.purchase,
+          amount: applied,
+          createdAt: now,
+        ),
+      );
+    }
+
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> markStockInPaid(
+    String stockInId, {
+    bool recordAsExpense = true,
+  }) async {
+    final index = _stockIns.indexWhere((s) => s.id == stockInId);
+    if (index == -1) return;
+    final rec = _stockIns[index];
+    if (rec.isPaid) return;
+    await recordSupplierPayment(
+      stockInId,
+      rec.remainingDebt,
+      recordAsExpense: recordAsExpense,
+    );
+  }
+
+  Future<void> markAllSupplierDebtsPaid(
+    String supplierName, {
+    bool recordAsExpense = true,
+  }) async {
+    final target = supplierName.trim().toLowerCase();
+    final now = DateTime.now();
+    var totalApplied = 0.0;
+    var changed = false;
+
+    for (var i = 0; i < _stockIns.length; i++) {
+      final rec = _stockIns[i];
+      if (rec.isPaid) continue;
+      if (rec.supplierName.trim().toLowerCase() != target) continue;
+      final applied = rec.remainingDebt;
+      if (applied <= 0.009) continue;
+      final history = List<SupplierDebtPayment>.from(rec.paymentHistory)
+        ..add(SupplierDebtPayment(amount: applied, paidAt: now));
+      _stockIns[i] = rec.copyWith(
+        isCredit: true,
+        paidAmount: rec.totalCost,
+        paidAt: now,
+        paymentHistory: history,
+      );
+      totalApplied += applied;
+      changed = true;
+    }
+
+    if (changed && recordAsExpense && totalApplied > 0.009) {
+      _expenses.insert(
+        0,
+        Expense(
+          id: _nextId('exp'),
+          title: strings.supplierDebtRepaymentTitle(supplierName),
+          category: ExpenseCategory.purchase,
+          amount: totalApplied,
+          createdAt: now,
+        ),
+      );
+    }
+
+    if (changed) {
+      notifyListeners();
+      await _persist();
+    }
+  }
+
   Future<void> repeatStockIn(StockInRecord record) async {
-    final quantities = <String, int>{};
+    final quantities = <String, double>{};
     final unitCosts = <String, double>{};
     final sellPrices = <String, double>{};
     for (final item in record.items) {
@@ -3373,13 +4922,13 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<int> applyStocktake(Map<String, int> actualCounts) async {
+  Future<int> applyStocktake(Map<String, double> actualCounts) async {
     var adjusted = 0;
     final now = DateTime.now();
     for (final entry in actualCounts.entries) {
       final index = _products.indexWhere((p) => p.id == entry.key);
       if (index == -1) continue;
-      final cleanCount = entry.value < 0 ? 0 : entry.value;
+      final cleanCount = entry.value < 0 ? 0.0 : entry.value;
       if (_products[index].stock != cleanCount) {
         final before = _products[index];
         final next = _applyStockOutTracking(
@@ -3432,6 +4981,9 @@ class ShopController extends ChangeNotifier {
         _cart.remove(current.id);
         moved += 1;
       }
+    }
+    if (moved >= 2) {
+      _bulkDeleteAuthorized = true;
     }
     if (moved > 0) {
       notifyListeners();
@@ -3527,6 +5079,9 @@ class ShopController extends ChangeNotifier {
         _cart.remove(current.id);
         moved += 1;
       }
+    }
+    if (moved >= 2) {
+      _bulkDeleteAuthorized = true;
     }
     if (moved > 0) {
       notifyListeners();
@@ -3698,6 +5253,9 @@ class ShopController extends ChangeNotifier {
     final before = _products.length;
     _products.removeWhere((p) => targetIds.contains(p.id) && p.isTrashed);
     final removed = before - _products.length;
+    if (removed >= 2) {
+      _bulkDeleteAuthorized = true;
+    }
     if (removed > 0) {
       for (final id in targetIds) {
         _cart.remove(id);
@@ -3717,9 +5275,11 @@ class ShopController extends ChangeNotifier {
 
   Future<void> deleteProduct(String productId) => moveProductToTrash(productId);
 
+  bool _autoWholesaleByCustomer = false;
   bool get wholesaleCartMode => _wholesaleCartMode;
 
   void setWholesaleCartMode(bool enabled) {
+    _autoWholesaleByCustomer = false;
     if (_wholesaleCartMode == enabled) return;
     _wholesaleCartMode = enabled;
     if (enabled) {
@@ -3728,10 +5288,108 @@ class ShopController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Automatically enables wholesale pricing when [customerName] belongs to a
+  /// `CustomerSegment.wholesale` customer, and reverts it if switched away
+  /// from a wholesale customer (when it was auto-enabled).
+  CustomerSegment? applyCustomerSegmentForCart(String customerName) {
+    final clean = customerName.trim();
+    if (clean.isEmpty) {
+      if (_autoWholesaleByCustomer) {
+        _autoWholesaleByCustomer = false;
+        if (_wholesaleCartMode) {
+          _wholesaleCartMode = false;
+          notifyListeners();
+        }
+      }
+      return null;
+    }
+    final existing = findCustomerByName(clean);
+    if (existing == null) {
+      if (_autoWholesaleByCustomer) {
+        _autoWholesaleByCustomer = false;
+        if (_wholesaleCartMode) {
+          _wholesaleCartMode = false;
+          notifyListeners();
+        }
+      }
+      return null;
+    }
+    if (existing.segment == CustomerSegment.wholesale) {
+      if (!_wholesaleCartMode) {
+        _wholesaleCartMode = true;
+        _autoWholesaleByCustomer = true;
+        trackFeatureUsage(FeatureUsageKeys.wholesaleMode);
+        notifyListeners();
+      }
+    } else if (_autoWholesaleByCustomer) {
+      _autoWholesaleByCustomer = false;
+      if (_wholesaleCartMode) {
+        _wholesaleCartMode = false;
+        notifyListeners();
+      }
+    }
+    return existing.segment;
+  }
+
+  Sale? lastSaleForCustomer(String customerName) {
+    final list = salesForCustomer(customerName);
+    if (list.isEmpty) return null;
+    for (final s in list) {
+      if (s.items.isNotEmpty) return s;
+    }
+    return list.first;
+  }
+
+  ({int addedLines, int skippedCount}) repeatSaleToCart(
+    Sale sale, {
+    bool replaceCart = true,
+  }) {
+    if (replaceCart) {
+      _cart.clear();
+      _cartCustomPrices.clear();
+    }
+    var addedLines = 0;
+    var skippedCount = 0;
+    for (final item in sale.items) {
+      final product = findProductById(item.productId);
+      if (product == null || !product.isActive) {
+        skippedCount += 1;
+        continue;
+      }
+      final existingQty = replaceCart ? 0.0 : (_cart[product.id] ?? 0.0);
+      final targetQty = canSellNegativeStock
+          ? existingQty + item.quantity
+          : (existingQty + item.quantity).clamp(0.0, product.stock);
+      if (targetQty <= existingQty + 0.0005) {
+        skippedCount += 1;
+        continue;
+      }
+      _cart[product.id] = targetQty;
+      addedLines += 1;
+    }
+    if (sale.customerName.trim().isNotEmpty) {
+      applyCustomerSegmentForCart(sale.customerName);
+    }
+    notifyListeners();
+    return (addedLines: addedLines, skippedCount: skippedCount);
+  }
+
+  bool isWholesaleDisabledFor(String productId) =>
+      _wholesaleDisabledProducts.contains(productId);
+
+  void setWholesaleDisabledFor(String productId, bool disabled) {
+    final changed = disabled
+        ? _wholesaleDisabledProducts.add(productId)
+        : _wholesaleDisabledProducts.remove(productId);
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
   List<CartLine> get cartLines {
     final lines = <CartLine>[];
     for (final entry in _cart.entries) {
-      final product = findProductById(entry.key);
+      final product = findProductById(entry.key) ?? _customCartProducts[entry.key];
       if (product != null && product.isActive && entry.value > 0) {
         lines.add(
           CartLine(
@@ -3739,6 +5397,7 @@ class ShopController extends ChangeNotifier {
             quantity: entry.value,
             customUnitPrice: _cartCustomPrices[entry.key],
             useWholesalePrice: _wholesaleCartMode,
+            wholesaleDisabled: _wholesaleDisabledProducts.contains(entry.key),
           ),
         );
       }
@@ -3746,18 +5405,95 @@ class ShopController extends ChangeNotifier {
     return lines;
   }
 
-  int get cartItemCount =>
-      _cart.values.fold(0, (sum, quantity) => sum + quantity);
+  double get cartItemCount =>
+      _cart.values.fold(0.0, (sum, quantity) => sum + quantity);
 
   double get cartSubtotal =>
       cartLines.fold(0.0, (sum, line) => sum + line.lineTotal);
 
+  double get cartTotalCost =>
+      cartLines.fold(0.0, (sum, line) => sum + line.lineCost);
+
   double get cartEstimatedProfit =>
       cartLines.fold(0.0, (sum, line) => sum + line.lineProfit);
 
-  int cartQuantityFor(String productId) => _cart[productId] ?? 0;
+  Map<String, Map<String, int>> _ensureCoOccurrenceMatrix() {
+    final topId = _sales.isNotEmpty ? _sales.first.id : '';
+    if (_cachedCoOccurrence != null &&
+        _cachedCoOccurrenceSalesCount == _sales.length &&
+        _cachedCoOccurrenceTopSaleId == topId) {
+      return _cachedCoOccurrence!;
+    }
+    final matrix = <String, Map<String, int>>{};
+    for (final sale in _sales) {
+      if (!sale.isActive || sale.items.length < 2) continue;
+      final ids = sale.items.map((i) => i.productId).toSet().toList();
+      if (ids.length < 2) continue;
+      for (var i = 0; i < ids.length; i++) {
+        for (var j = i + 1; j < ids.length; j++) {
+          final a = ids[i];
+          final b = ids[j];
+          final mapA = matrix.putIfAbsent(a, () => {});
+          mapA[b] = (mapA[b] ?? 0) + 1;
+          final mapB = matrix.putIfAbsent(b, () => {});
+          mapB[a] = (mapB[a] ?? 0) + 1;
+        }
+      }
+    }
+    _cachedCoOccurrence = matrix;
+    _cachedCoOccurrenceSalesCount = _sales.length;
+    _cachedCoOccurrenceTopSaleId = topId;
+    return matrix;
+  }
 
-  bool addToCart(String productId, {int quantity = 1}) {
+  List<Product> frequentlyBoughtTogetherForCart({int limit = 3}) {
+    if (_cart.isEmpty) return const [];
+    final inCartIds = _cart.keys.toSet();
+    final matrix = _ensureCoOccurrenceMatrix();
+    final scores = <String, int>{};
+
+    for (final cartId in inCartIds) {
+      final neighbors = matrix[cartId];
+      if (neighbors == null) continue;
+      for (final entry in neighbors.entries) {
+        if (inCartIds.contains(entry.key)) continue;
+        scores[entry.key] = (scores[entry.key] ?? 0) + entry.value;
+      }
+    }
+    if (scores.isEmpty) return const [];
+
+    final candidates = <({Product product, int score})>[];
+    for (final entry in scores.entries) {
+      final p = findProductById(entry.key);
+      if (p == null || !p.isActive) continue;
+      if (!canSellNegativeStock && p.stock <= 0) continue;
+      candidates.add((product: p, score: entry.value));
+    }
+    candidates.sort((a, b) {
+      final cmp = b.score.compareTo(a.score);
+      if (cmp != 0) return cmp;
+      return a.product.name.toLowerCase().compareTo(b.product.name.toLowerCase());
+    });
+    return candidates.take(limit).map((e) => e.product).toList();
+  }
+
+  bool get hasBelowCostCartItems => cartLines.any(
+        (line) =>
+            line.product.costPrice > 0 &&
+            line.unitPrice + 0.009 < line.product.costPrice,
+      );
+
+  bool isSaleBelowCost({double discount = 0}) {
+    if (hasBelowCostCartItems) return true;
+    final totalCost = cartTotalCost;
+    if (totalCost <= 0) return false;
+    final finalTotal = (cartSubtotal - discount).clamp(0.0, double.infinity);
+    return finalTotal + 0.009 < totalCost;
+  }
+
+  double cartQuantityFor(String productId) => _cart[productId] ?? 0;
+
+  bool addToCart(String productId, {double quantity = 1}) {
     final product = findProductById(productId);
     if (product == null || !product.isActive || quantity <= 0) {
       return false;
@@ -3772,11 +5508,48 @@ class ShopController extends ChangeNotifier {
     return true;
   }
 
-  void setCartQuantity(String productId, int quantity) {
+  String addCustomCartItem({
+    required double price,
+    String name = '',
+    double quantity = 1,
+  }) {
+    if (price <= 0 || quantity <= 0) return '';
+    final id = _nextId('custom');
+    final cleanName = name.trim().isEmpty
+        ? strings.customPosItemDefaultName
+        : InputNormalizer.normalizeDisplayName(name);
+    _customCartProducts[id] = Product(
+      id: id,
+      name: cleanName,
+      category: '',
+      costPrice: 0,
+      sellPrice: price,
+      stock: 999999,
+      updatedAt: DateTime.now(),
+    );
+    _cart[id] = quantity;
+    notifyListeners();
+    return id;
+  }
+
+  void setCartQuantity(String productId, double quantity) {
+    final custom = _customCartProducts[productId];
+    if (custom != null) {
+      if (quantity <= 0) {
+        _cart.remove(productId);
+        _cartCustomPrices.remove(productId);
+        _customCartProducts.remove(productId);
+      } else {
+        _cart[productId] = quantity;
+      }
+      notifyListeners();
+      return;
+    }
     final product = findProductById(productId);
     if (product == null || !product.isActive || quantity <= 0) {
       _cart.remove(productId);
       _cartCustomPrices.remove(productId);
+      _wholesaleDisabledProducts.remove(productId);
       notifyListeners();
       return;
     }
@@ -3784,6 +5557,7 @@ class ShopController extends ChangeNotifier {
       if (product.stock <= 0) {
         _cart.remove(productId);
         _cartCustomPrices.remove(productId);
+        _wholesaleDisabledProducts.remove(productId);
         notifyListeners();
         return;
       }
@@ -3795,15 +5569,22 @@ class ShopController extends ChangeNotifier {
   }
 
   void setCartItemPrice(String productId, double? price) {
-    final product = findProductById(productId);
+    final product = findProductById(productId) ?? _customCartProducts[productId];
     if (product == null || price == null || price <= 0) {
       _cartCustomPrices.remove(productId);
       notifyListeners();
       return;
     }
-    final defaultPrice = _wholesaleCartMode && product.hasWholesalePrice
-        ? product.wholesalePrice
-        : product.sellPrice;
+    final qty = _cart[productId] ?? 0;
+    final wholesaleDisabled = _wholesaleDisabledProducts.contains(productId);
+    final effectiveWholesale = !wholesaleDisabled &&
+        product.hasWholesalePrice &&
+        (_wholesaleCartMode || product.isAutoWholesaleForQty(qty));
+    final defaultPrice =
+        effectiveWholesale ? product.wholesalePrice : product.sellPrice;
+    if (!canGiveDiscounts && price + 0.009 < defaultPrice) {
+      return;
+    }
     if ((price - defaultPrice).abs() < 0.009) {
       _cartCustomPrices.remove(productId);
     } else {
@@ -3812,11 +5593,54 @@ class ShopController extends ChangeNotifier {
     notifyListeners();
   }
 
+  ({
+    Map<String, double> quantities,
+    Map<String, double> customPrices,
+    Map<String, Product> customProducts,
+    bool wholesaleMode,
+  }) captureCartSnapshot() {
+    return (
+      quantities: Map<String, double>.from(_cart),
+      customPrices: Map<String, double>.from(_cartCustomPrices),
+      customProducts: Map<String, Product>.from(_customCartProducts),
+      wholesaleMode: _wholesaleCartMode,
+    );
+  }
+
+  void restoreCartSnapshot(
+    ({
+      Map<String, double> quantities,
+      Map<String, double> customPrices,
+      Map<String, Product> customProducts,
+      bool wholesaleMode,
+    }) snapshot,
+  ) {
+    _cart
+      ..clear()
+      ..addAll(snapshot.quantities);
+    _cartCustomPrices
+      ..clear()
+      ..addAll(snapshot.customPrices);
+    _customCartProducts
+      ..clear()
+      ..addAll(snapshot.customProducts);
+    _wholesaleCartMode = snapshot.wholesaleMode;
+    notifyListeners();
+  }
+
   void clearCart() {
-    if (_cart.isEmpty && !_wholesaleCartMode) return;
+    if (_cart.isEmpty &&
+        _customCartProducts.isEmpty &&
+        !_wholesaleCartMode &&
+        _wholesaleDisabledProducts.isEmpty) {
+      return;
+    }
     _cart.clear();
     _cartCustomPrices.clear();
+    _customCartProducts.clear();
+    _wholesaleDisabledProducts.clear();
     _wholesaleCartMode = false;
+    _autoWholesaleByCustomer = false;
     notifyListeners();
   }
 
@@ -3831,9 +5655,19 @@ class ShopController extends ChangeNotifier {
     String discountReason = '',
     double? paidAmount,
     DateTime? dueDate,
+    String? ownerPinAttempt,
   }) async {
     final lines = cartLines;
     if (lines.isEmpty) return null;
+
+    final checkDiscount = discount < 0 ? 0.0 : discount;
+    if (_cashierMode &&
+        hasOwnerPin &&
+        isSaleBelowCost(discount: checkDiscount)) {
+      if (ownerPinAttempt == null || !verifyOwnerPin(ownerPinAttempt)) {
+        return null;
+      }
+    }
 
     if (!canSellNegativeStock) {
       for (final line in lines) {
@@ -3856,7 +5690,7 @@ class ShopController extends ChangeNotifier {
         .toList();
 
     final now = DateTime.now();
-    final cleanDiscount = discount < 0 ? 0.0 : discount;
+    final cleanDiscount = (!canGiveDiscounts || discount < 0) ? 0.0 : discount;
     final subtotal = saleItems.fold(0.0, (sum, item) => sum + item.lineTotal);
     final total = (subtotal - cleanDiscount).clamp(0.0, double.infinity);
     final hasValidSplit = secondaryPaymentMethod != null &&
@@ -3873,8 +5707,8 @@ class ShopController extends ChangeNotifier {
       resolvedPaid = total;
     }
 
-    final cleanCustomerName = customerName.trim();
-    final cleanCustomerPhone = customerPhone.trim();
+    final cleanCustomerName = InputNormalizer.normalizeDisplayName(customerName);
+    final cleanCustomerPhone = InputNormalizer.normalizePhone(customerPhone);
 
     final sale = Sale(
       id: _nextId('sal'),
@@ -3884,6 +5718,7 @@ class ShopController extends ChangeNotifier {
       secondaryAmount: hasValidSplit ? secondaryAmount : 0,
       customerName: cleanCustomerName,
       customerPhone: cleanCustomerPhone,
+      sellerName: _activeSeller,
       discount: cleanDiscount,
       discountReason: cleanDiscount > 0.009 ? discountReason.trim() : '',
       paidAmount: resolvedPaid,
@@ -3897,9 +5732,14 @@ class ShopController extends ChangeNotifier {
 
     if (cleanCustomerName.isNotEmpty) {
       _hiddenCustomerSuggestions.remove(cleanCustomerName.toLowerCase());
-      final existingIdx = _customers.indexWhere(
-        (c) => c.name.trim().toLowerCase() == cleanCustomerName.toLowerCase(),
-      );
+      final normCustomerKey = InputNormalizer.normalizeNameKey(cleanCustomerName);
+      final existingIdx = _customers.indexWhere((c) {
+        if (cleanCustomerPhone.isNotEmpty &&
+            InputNormalizer.normalizePhone(c.phone) == cleanCustomerPhone) {
+          return true;
+        }
+        return InputNormalizer.normalizeNameKey(c.name) == normCustomerKey;
+      });
       if (existingIdx != -1) {
         final existing = _customers[existingIdx];
         final phoneChanged = cleanCustomerPhone.isNotEmpty &&
@@ -3950,6 +5790,8 @@ class ShopController extends ChangeNotifier {
     _sales.insert(0, sale);
     _cart.clear();
     _cartCustomPrices.clear();
+    _customCartProducts.clear();
+    _wholesaleDisabledProducts.clear();
     _wholesaleCartMode = false;
     _incrementFeatureUsageInMemory(FeatureUsageKeys.saleComplete);
     notifyListeners();
@@ -3997,9 +5839,9 @@ class ShopController extends ChangeNotifier {
 
   Future<void> processSaleReturnOrExchange({
     required String saleId,
-    required Map<String, int> returnQuantities,
+    required Map<String, double> returnQuantities,
     double customRefundAmount = 0,
-    List<({Product product, int quantity, double? customUnitPrice})> exchangeItems = const [],
+    List<({Product product, double quantity, double? customUnitPrice})> exchangeItems = const [],
     bool returnToStock = true,
     PaymentMethod? settlementMethod,
     String returnReason = '',
@@ -4042,7 +5884,7 @@ class ShopController extends ChangeNotifier {
             DefectWriteOffItem(
               productId: item.productId,
               productName: item.productName,
-              quantity: retQty,
+              quantity: retQty.toDouble(),
               unitCost: item.unitCost,
               reason: cleanReason,
               createdAt: now,
@@ -4258,15 +6100,17 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> archiveSale(String saleId) async {
+  Future<bool> archiveSale(String saleId, {String? ownerPinAttempt}) async {
+    if (!_canMutateOrDeleteSale(ownerPinAttempt)) return false;
     final index = _sales.indexWhere((s) => s.id == saleId);
-    if (index == -1) return;
+    if (index == -1) return false;
     _sales[index] = _sales[index].copyWith(
       archivedAt: DateTime.now(),
       clearTrashedAt: true,
     );
     notifyListeners();
     await _persist();
+    return true;
   }
 
   Future<void> unarchiveSale(String saleId) async {
@@ -4280,11 +6124,12 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> moveSaleToTrash(String saleId) async {
+  Future<bool> moveSaleToTrash(String saleId, {String? ownerPinAttempt}) async {
+    if (!_canMutateOrDeleteSale(ownerPinAttempt)) return false;
     final index = _sales.indexWhere((s) => s.id == saleId);
-    if (index == -1) return;
+    if (index == -1) return false;
     final sale = _sales[index];
-    if (sale.isTrashed) return;
+    if (sale.isTrashed) return false;
     final now = DateTime.now();
 
     for (final item in sale.items) {
@@ -4305,6 +6150,7 @@ class ShopController extends ChangeNotifier {
     _sales[index] = sale.copyWith(trashedAt: now);
     notifyListeners();
     await _persist();
+    return true;
   }
 
   Future<void> restoreSaleFromTrash(String saleId) async {
@@ -4367,13 +6213,21 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> deleteSalePermanently(String saleId) async {
+  Future<bool> deleteSalePermanently(
+    String saleId, {
+    String? ownerPinAttempt,
+  }) async {
+    if (!_canMutateOrDeleteSale(ownerPinAttempt)) return false;
+    final before = _sales.length;
     _sales.removeWhere((s) => s.id == saleId);
+    if (_sales.length == before) return false;
     notifyListeners();
     await _persist();
+    return true;
   }
 
-  Future<void> voidSale(String saleId) => moveSaleToTrash(saleId);
+  Future<bool> voidSale(String saleId, {String? ownerPinAttempt}) =>
+      moveSaleToTrash(saleId, ownerPinAttempt: ownerPinAttempt);
 
   Future<void> addExpense({
     required String title,
@@ -4436,12 +6290,284 @@ class ShopController extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> emptyTrash() async {
+  Future<void> emptyTrash({String? ownerPinAttempt}) async {
     _products.removeWhere((p) => p.isTrashed);
-    _sales.removeWhere((s) => s.isTrashed);
+    if (_canMutateOrDeleteSale(ownerPinAttempt)) {
+      _sales.removeWhere((s) => s.isTrashed);
+    }
     _expenses.removeWhere((e) => e.isTrashed);
+    _bulkDeleteAuthorized = true;
     notifyListeners();
     await _persist();
+  }
+
+  /// Permanently removes trashed products, sales, and expenses whose
+  /// `trashedAt` timestamp is older than [_trashRetentionDays].
+  int purgeExpiredTrash({DateTime? now}) {
+    if (_trashRetentionDays <= 0) return 0;
+    final cutoff =
+        (now ?? DateTime.now()).subtract(Duration(days: _trashRetentionDays));
+    var removed = 0;
+
+    final expiredProductIds = _products
+        .where((p) => p.isTrashed && p.trashedAt!.isBefore(cutoff))
+        .map((p) => p.id)
+        .toSet();
+    if (expiredProductIds.isNotEmpty) {
+      _products.removeWhere((p) => expiredProductIds.contains(p.id));
+      for (final id in expiredProductIds) {
+        _cart.remove(id);
+        _cartCustomPrices.remove(id);
+      }
+      removed += expiredProductIds.length;
+    }
+
+    final beforeSales = _sales.length;
+    _sales.removeWhere((s) => s.isTrashed && s.trashedAt!.isBefore(cutoff));
+    removed += beforeSales - _sales.length;
+
+    final beforeExpenses = _expenses.length;
+    _expenses.removeWhere((e) => e.isTrashed && e.trashedAt!.isBefore(cutoff));
+    removed += beforeExpenses - _expenses.length;
+
+    return removed;
+  }
+
+  int? daysUntilAutoPurge(DateTime? trashedAt, {DateTime? now}) {
+    if (_trashRetentionDays <= 0 || trashedAt == null) return null;
+    final expiresAt = trashedAt.add(Duration(days: _trashRetentionDays));
+    final diff = expiresAt.difference(now ?? DateTime.now()).inDays;
+    return diff < 0 ? 0 : diff;
+  }
+
+  Future<int> setTrashRetentionDays(int days) async {
+    await ensureArchiveAndTrashLoaded();
+    final clean = days < 0 ? 0 : days;
+    final changed = _trashRetentionDays != clean;
+    _trashRetentionDays = clean;
+    final purged = purgeExpiredTrash();
+    if (changed || purged > 0) {
+      notifyListeners();
+      await _persist();
+    }
+    return purged;
+  }
+
+  List<({int year, int salesCount, int unpaidSalesCount, int stockInsCount})>
+      get archivablePastYears {
+    final currentYear = DateTime.now().year;
+    final byYear = <int, ({int sales, int unpaid, int stockIns})>{};
+
+    for (final s in _sales) {
+      final y = s.createdAt.year;
+      if (y >= currentYear || s.id.startsWith('yrsum_')) continue;
+      final prev = byYear[y] ?? (sales: 0, unpaid: 0, stockIns: 0);
+      byYear[y] = (
+        sales: prev.sales + 1,
+        unpaid: prev.unpaid + (s.isPaid ? 0 : 1),
+        stockIns: prev.stockIns,
+      );
+    }
+    for (final r in _stockIns) {
+      final y = r.createdAt.year;
+      if (y >= currentYear || r.id.startsWith('yrsum_')) continue;
+      final prev = byYear[y] ?? (sales: 0, unpaid: 0, stockIns: 0);
+      byYear[y] = (
+        sales: prev.sales,
+        unpaid: prev.unpaid,
+        stockIns: prev.stockIns + 1,
+      );
+    }
+
+    final list = byYear.entries
+        .map(
+          (e) => (
+            year: e.key,
+            salesCount: e.value.sales,
+            unpaidSalesCount: e.value.unpaid,
+            stockInsCount: e.value.stockIns,
+          ),
+        )
+        .toList()
+      ..sort((a, b) => b.year.compareTo(a.year));
+    return list;
+  }
+
+  List<Sale> rawSalesForYear(int year) => _sales
+      .where((s) => s.createdAt.year == year && !s.id.startsWith('yrsum_'))
+      .toList(growable: false);
+
+  List<StockInRecord> rawStockInsForYear(int year) => _stockIns
+      .where((r) => r.createdAt.year == year && !r.id.startsWith('yrsum_'))
+      .toList(growable: false);
+
+  Future<
+      ({
+        int compressedSales,
+        int compressedStockIns,
+        int keptUnpaidSales,
+        int monthlySummariesCreated,
+      })> archiveAndCompressYear(int year) async {
+    await ensureFullHistoryLoaded();
+    if (year >= DateTime.now().year) {
+      return (
+        compressedSales: 0,
+        compressedStockIns: 0,
+        keptUnpaidSales: 0,
+        monthlySummariesCreated: 0,
+      );
+    }
+
+    final eligibleSales = _sales
+        .where(
+          (s) =>
+              s.createdAt.year == year &&
+              !s.id.startsWith('yrsum_') &&
+              s.isPaid,
+        )
+        .toList();
+    final keptUnpaidSales = _sales
+        .where(
+          (s) =>
+              s.createdAt.year == year &&
+              !s.id.startsWith('yrsum_') &&
+              !s.isPaid,
+        )
+        .length;
+    final eligibleStockIns = _stockIns
+        .where((r) => r.createdAt.year == year && !r.id.startsWith('yrsum_'))
+        .toList();
+
+    if (eligibleSales.isEmpty && eligibleStockIns.isEmpty) {
+      return (
+        compressedSales: 0,
+        compressedStockIns: 0,
+        keptUnpaidSales: keptUnpaidSales,
+        monthlySummariesCreated: 0,
+      );
+    }
+
+    var summariesCreated = 0;
+
+    // Group & compress sales by month
+    final salesByMonth = <int, List<Sale>>{};
+    for (final s in eligibleSales) {
+      salesByMonth.putIfAbsent(s.createdAt.month, () => []).add(s);
+    }
+    final compressedSaleIds = eligibleSales.map((s) => s.id).toSet();
+    _sales.removeWhere((s) => compressedSaleIds.contains(s.id));
+
+    for (final entry in salesByMonth.entries) {
+      final month = entry.key;
+      final mm = month.toString().padLeft(2, '0');
+      final summaryId = 'yrsum_sal_${year}_$mm';
+      final existingIdx = _sales.indexWhere((s) => s.id == summaryId);
+      final existing = existingIdx != -1 ? _sales[existingIdx] : null;
+
+      var totalRevenue = existing?.total ?? 0.0;
+      var totalCost = existing?.totalCost ?? 0.0;
+      var totalDiscount = existing?.discount ?? 0.0;
+      var totalUnits = existing != null ? existing.totalUnits : 0;
+      var ordersCount = entry.value.length;
+
+      for (final s in entry.value) {
+        totalRevenue += s.total;
+        totalCost += s.totalCost;
+        totalDiscount += s.discount;
+        totalUnits += s.totalUnits;
+      }
+
+      final qty = totalUnits > 0 ? totalUnits.toDouble() : 1.0;
+      final unitCost = totalCost / qty;
+      final unitPrice = (totalRevenue + totalDiscount) / qty;
+      final lastDay = DateTime(year, month + 1, 0, 23, 59);
+
+      final summarySale = Sale(
+        id: summaryId,
+        items: [
+          SaleItem(
+            productId: 'yrsum_$year',
+            productName: 'Итоги $mm.$year ($ordersCount чек.)',
+            quantity: qty,
+            unitCost: unitCost,
+            unitPrice: unitPrice,
+          ),
+        ],
+        paymentMethod: PaymentMethod.cash,
+        discount: totalDiscount,
+        paidAmount: totalRevenue,
+        paidAt: lastDay,
+        createdAt: lastDay,
+      );
+      if (existingIdx != -1) {
+        _sales[existingIdx] = summarySale;
+      } else {
+        _sales.add(summarySale);
+        summariesCreated += 1;
+      }
+    }
+
+    // Group & compress stock-ins by month
+    final stockInsByMonth = <int, List<StockInRecord>>{};
+    for (final r in eligibleStockIns) {
+      stockInsByMonth.putIfAbsent(r.createdAt.month, () => []).add(r);
+    }
+    final compressedStockInIds = eligibleStockIns.map((r) => r.id).toSet();
+    _stockIns.removeWhere((r) => compressedStockInIds.contains(r.id));
+
+    for (final entry in stockInsByMonth.entries) {
+      final month = entry.key;
+      final mm = month.toString().padLeft(2, '0');
+      final summaryId = 'yrsum_in_${year}_$mm';
+      final existingIdx = _stockIns.indexWhere((r) => r.id == summaryId);
+      final existing = existingIdx != -1 ? _stockIns[existingIdx] : null;
+
+      var totalCost = existing?.totalCost ?? 0.0;
+      var totalUnits = existing?.totalUnits ?? 0;
+      final invoicesCount = entry.value.length;
+
+      for (final r in entry.value) {
+        totalCost += r.totalCost;
+        totalUnits += r.totalUnits;
+      }
+
+      final qty = totalUnits > 0 ? totalUnits.toDouble() : 1.0;
+      final unitCost = totalCost / qty;
+      final lastDay = DateTime(year, month + 1, 0, 23, 59);
+
+      final summaryRecord = StockInRecord(
+        id: summaryId,
+        supplierName: 'Итоги приходов $mm.$year ($invoicesCount накл.)',
+        items: [
+          StockInItem(
+            productId: 'yrsum_in_$year',
+            productName: 'Приходы $mm.$year ($invoicesCount накл.)',
+            quantity: qty,
+            unitCost: unitCost,
+          ),
+        ],
+        createdAt: lastDay,
+      );
+      if (existingIdx != -1) {
+        _stockIns[existingIdx] = summaryRecord;
+      } else {
+        _stockIns.add(summaryRecord);
+        summariesCreated += 1;
+      }
+    }
+
+    _sales.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _stockIns.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _bulkDeleteAuthorized = true;
+    notifyListeners();
+    await _persist();
+
+    return (
+      compressedSales: eligibleSales.length,
+      compressedStockIns: eligibleStockIns.length,
+      keptUnpaidSales: keptUnpaidSales,
+      monthlySummariesCreated: summariesCreated,
+    );
   }
 
   Future<void> loadSampleData() async {

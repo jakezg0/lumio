@@ -74,7 +74,7 @@ class SheetExportHelper {
             )
             .toList();
         final cutoff30 = DateTime.now().subtract(const Duration(days: 30));
-        final sold30 = <String, int>{};
+        final sold30 = <String, double>{};
         for (final s in controller.sales) {
           if (s.createdAt.isBefore(cutoff30)) continue;
           for (final item in s.items) {

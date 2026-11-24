@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -8,16 +7,27 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/product.dart';
 import '../services/export_service.dart';
+import '../services/input_normalizer.dart';
 import '../services/sheet_export_helper.dart';
 import '../state/shop_controller.dart';
+import '../widgets/attach_barcode_sheet.dart';
 import '../widgets/barcode_label_sheet.dart';
+import '../widgets/price_tag_queue_sheet.dart';
+import '../widgets/purchase_order_sheet.dart';
+import '../widgets/catalog_health_sheet.dart';
 import '../widgets/currency_calculator_dialog.dart';
 import '../widgets/daily_advice_sheet.dart';
 import '../widgets/formatters.dart';
+import '../widgets/frozen_cash_sheet.dart';
+import '../widgets/pin_confirm_dialog.dart';
+import '../widgets/price_list_sheet.dart';
 import '../widgets/product_form_sheet.dart';
+import '../widgets/product_thumbnail.dart';
 import '../widgets/settings_button.dart';
 import '../widgets/stock_in_sheet.dart';
 import '../widgets/stocktake_sheet.dart';
+import '../widgets/suppliers_sheet.dart';
+import '../widgets/voice_search_button.dart';
 import 'barcode_scanner_screen.dart';
 
 enum _StockFilter { all, inStock, inMinus, lowStock, outOfStock }
@@ -50,6 +60,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
   _StockFilter _stockFilter = _StockFilter.all;
   _ProductSort _sortBy = _ProductSort.newest;
   bool _controlsVisible = true;
+  bool _showSummaryHeader = false;
   bool _selectionMode = false;
   final Set<String> _selectedIds = <String>{};
   String? _dismissedAdviceDayKey;
@@ -61,14 +72,34 @@ class _InventoryScreenState extends State<InventoryScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    final savedCat = widget.controller.inventorySelectedCategory;
+    _selectedCategory = savedCat.isEmpty ? null : savedCat;
+    _sortBy = _ProductSort.values.firstWhere(
+      (e) => e.name == widget.controller.inventorySort,
+      orElse: () => _ProductSort.newest,
+    );
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     _listScrollController.dispose();
     super.dispose();
   }
 
+  void _setSelectedCategory(String? category) {
+    setState(() => _selectedCategory = category);
+    widget.controller.setInventoryViewPreferences(
+      category: category,
+      updateCategory: true,
+    );
+  }
+
   void _selectSort(_ProductSort sort) {
     setState(() => _sortBy = sort);
+    widget.controller.setInventoryViewPreferences(sort: sort.name);
     if (_listScrollController.hasClients && _listScrollController.offset > 0) {
       _listScrollController.animateTo(
         0,
@@ -99,15 +130,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
     return false;
   }
 
-  Map<String, int> _computeSoldUnitsByProduct() {
-    final counts = <String, int>{};
-    for (final sale in widget.controller.sales) {
-      for (final item in sale.items) {
-        counts[item.productId] = (counts[item.productId] ?? 0) + item.quantity;
-      }
-    }
-    return counts;
-  }
 
   String _sortOptionLabel(_ProductSort sort, dynamic strings) {
     switch (sort) {
@@ -130,7 +152,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
-  List<Product> _filteredProducts(Map<String, int> soldUnitsByProduct) {
+  List<Product> _filteredProducts(Map<String, double> soldUnitsByProduct) {
     final query = _searchQuery.trim().toLowerCase();
     final list = widget.controller.products.where((product) {
       if (_selectedCategory != null && product.category != _selectedCategory) {
@@ -149,13 +171,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
           if (product.stock > 0) return false;
       }
       if (query.isEmpty) return true;
-      return product.name.toLowerCase().contains(query) ||
-          product.category.toLowerCase().contains(query) ||
-          product.sku.toLowerCase().contains(query) ||
-          product.nomenclature.toLowerCase().contains(query) ||
-          product.printName.toLowerCase().contains(query) ||
-          product.packBarcode.toLowerCase().contains(query) ||
-          product.boxBarcode.toLowerCase().contains(query);
+      return InputNormalizer.matchesProductSearch(product, _searchQuery);
     }).toList();
 
     switch (_sortBy) {
@@ -236,6 +252,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
         sellPrice: result.sellPrice,
         costPrice: result.costPrice,
         wholesalePrice: result.wholesalePrice,
+        wholesaleMinQty: result.wholesaleMinQty,
         stock: result.stock,
       ),
     );
@@ -268,6 +285,24 @@ class _InventoryScreenState extends State<InventoryScreen> {
         controller: widget.controller,
         product: product,
       ),
+    );
+  }
+
+  void _openPriceTagQueue() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => PriceTagQueueSheet(controller: widget.controller),
+    );
+  }
+
+  void _openPurchaseOrder() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => PurchaseOrderSheet(controller: widget.controller),
     );
   }
 
@@ -318,7 +353,49 @@ class _InventoryScreenState extends State<InventoryScreen> {
         await _openProductForm(existing: found);
       }
     } else if (!widget.controller.cashierMode) {
-      await _openProductForm(initialSku: sku.trim());
+      final code = sku.trim();
+      final action = await showModalBottomSheet<String>(
+        context: context,
+        builder: (sheetCtx) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  strings.skuNotFoundMsg(code),
+                  style: Theme.of(sheetCtx).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(sheetCtx).pop('attach'),
+                  icon: const Icon(Icons.link),
+                  label: Text(strings.attachBarcodeToExistingBtn),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(sheetCtx).pop('create'),
+                  icon: const Icon(Icons.add),
+                  label: Text(strings.createNewProductBtn),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (action == 'attach') {
+        await showAttachBarcodeSheet(
+          context,
+          controller: widget.controller,
+          barcode: code,
+        );
+      } else if (action == 'create') {
+        await _openProductForm(initialSku: code);
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.skuNotFoundMsg(sku.trim()))),
@@ -328,15 +405,56 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   Future<void> _openStockIn() async {
     widget.controller.trackFeatureUsage(FeatureUsageKeys.stockIn);
-    final units = await showModalBottomSheet<int>(
+    final beforeQueueCount = widget.controller.priceTagQueueProducts.length;
+    final units = await showModalBottomSheet<double>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       builder: (_) => StockInSheet(controller: widget.controller),
     );
     if (units != null && units > 0 && mounted) {
+      final addedToPrint = widget.controller.priceTagQueueProducts.length -
+          beforeQueueCount;
+      final latestRecord = widget.controller.stockIns.isNotEmpty
+          ? widget.controller.stockIns.first
+          : null;
+      final invoiceProducts = [
+        if (latestRecord != null)
+          for (final item in latestRecord.items)
+            if (widget.controller.findProductById(item.productId) != null)
+              widget.controller.findProductById(item.productId)!,
+      ];
+      final strings = widget.controller.strings;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.controller.strings.stockInSavedMsg(units))),
+        SnackBar(
+          duration: const Duration(seconds: 6),
+          content: Text(
+            addedToPrint > 0
+                ? '${strings.stockInSavedMsg(units)} • ${strings.addedToPriceTagQueueNotice(addedToPrint)}'
+                : strings.stockInSavedMsg(units),
+          ),
+          action: invoiceProducts.isNotEmpty
+              ? SnackBarAction(
+                  label: strings.printInvoicePriceTagsBtn,
+                  onPressed: () {
+                    showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      useSafeArea: true,
+                      builder: (_) => BatchPriceTagsSheet(
+                        controller: widget.controller,
+                        products: invoiceProducts,
+                      ),
+                    );
+                  },
+                )
+              : (addedToPrint > 0
+                  ? SnackBarAction(
+                      label: strings.priceTagQueueTitle,
+                      onPressed: _openPriceTagQueue,
+                    )
+                  : null),
+        ),
       );
     }
   }
@@ -363,31 +481,21 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   Future<void> _confirmMoveToTrash(Product product) async {
     final strings = widget.controller.strings;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(strings.deleteProductTitle),
-        content: Text(strings.deleteProductBody(product.name)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(strings.cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(strings.moveToTrashAction),
-          ),
-        ],
+    final messenger = ScaffoldMessenger.of(context);
+    await widget.controller.moveProductToTrash(product.id);
+    if (!mounted) return;
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 4),
+        content: Text(strings.movedToTrashMsg),
+        action: SnackBarAction(
+          label: strings.undoAction,
+          onPressed: () =>
+              widget.controller.restoreTrashedProducts([product.id]),
+        ),
       ),
     );
-    if (confirmed == true) {
-      await widget.controller.moveProductToTrash(product.id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.movedToTrashMsg)),
-        );
-      }
-    }
   }
 
   void _enterSelectionMode([String? initialId]) {
@@ -447,98 +555,48 @@ class _InventoryScreenState extends State<InventoryScreen> {
   Future<void> _confirmMoveSelectedToArchive() async {
     if (_selectedIds.isEmpty) return;
     final strings = widget.controller.strings;
-    final count = _selectedIds.length;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(strings.chooseDestinationTitle),
-        content: Text(strings.deleteBatchConfirmBody(count)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(strings.cancel),
+    final messenger = ScaffoldMessenger.of(context);
+    final ids = List<String>.from(_selectedIds);
+    final moved = await widget.controller.archiveProducts(ids);
+    _exitSelectionMode();
+    if (mounted && moved > 0) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 4),
+          content: Text(strings.movedCountToArchiveMsg(moved)),
+          action: SnackBarAction(
+            label: strings.undoAction,
+            onPressed: () => widget.controller.unarchiveProducts(ids),
           ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(strings.archiveAction),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      final moved = await widget.controller.archiveProducts(_selectedIds);
-      _exitSelectionMode();
-      if (mounted && moved > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.movedCountToArchiveMsg(moved))),
-        );
-      }
+        ),
+      );
     }
   }
 
   Future<void> _confirmMoveSelectedToTrash() async {
     if (_selectedIds.isEmpty) return;
     final strings = widget.controller.strings;
-    final count = _selectedIds.length;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(strings.deleteProductTitle),
-        content: Text(strings.deleteBatchConfirmBody(count)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(strings.cancel),
+    final messenger = ScaffoldMessenger.of(context);
+    final ids = List<String>.from(_selectedIds);
+    final moved = await widget.controller.moveProductsToTrash(ids);
+    _exitSelectionMode();
+    if (mounted && moved > 0) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 4),
+          content: Text(strings.movedCountToTrashMsg(moved)),
+          action: SnackBarAction(
+            label: strings.undoAction,
+            onPressed: () => widget.controller.restoreTrashedProducts(ids),
           ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(strings.moveToTrashAction),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      final moved = await widget.controller.moveProductsToTrash(_selectedIds);
-      _exitSelectionMode();
-      if (mounted && moved > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.movedCountToTrashMsg(moved))),
-        );
-      }
+        ),
+      );
     }
   }
 
-  Future<void> _promptDeleteGroupToTrash() async {
-    final strings = widget.controller.strings;
-    final categories = widget.controller.categories;
-    if (categories.isEmpty) return;
 
-    String? targetCategory = _selectedCategory;
-    targetCategory ??= await showDialog<String>(
-        context: context,
-        builder: (context) => SimpleDialog(
-          title: Text(strings.chooseGroupToDelete),
-          children: [
-            for (final cat in categories)
-              SimpleDialogOption(
-                onPressed: () => Navigator.of(context).pop(cat),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(child: Text(cat)),
-                    Text(
-                      '${widget.controller.products.where((p) => p.category == cat).length}',
-                      style: Theme.of(context).textTheme.labelMedium,
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      );
-    if (targetCategory == null || !mounted) return;
-    await _confirmDeleteSpecificGroup(targetCategory);
-  }
 
   Future<void> _confirmDeleteSpecificGroup(String targetCategory) async {
     final strings = widget.controller.strings;
@@ -548,7 +606,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     if (count == 0) {
       await widget.controller.deleteEmptyCategory(targetCategory);
       if (_selectedCategory == targetCategory) {
-        setState(() => _selectedCategory = null);
+        _setSelectedCategory(null);
       }
       return;
     }
@@ -562,7 +620,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     if (destination == 'archive') {
       final moved = await widget.controller.archiveCategory(targetCategory);
       if (_selectedCategory == targetCategory) {
-        setState(() => _selectedCategory = null);
+        _setSelectedCategory(null);
       }
       if (mounted && moved > 0) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -572,7 +630,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     } else {
       final moved = await widget.controller.moveCategoryToTrash(targetCategory);
       if (_selectedCategory == targetCategory) {
-        setState(() => _selectedCategory = null);
+        _setSelectedCategory(null);
       }
       if (mounted && moved > 0) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -582,35 +640,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
-  Future<void> _confirmMoveAllToTrash() async {
-    final strings = widget.controller.strings;
-    final count = widget.controller.products.length;
-    if (count == 0) return;
 
-    final destination = await _promptArchiveOrTrashDestination(
-      strings.chooseDestinationTitle,
-      count,
-    );
-    if (destination == null) return;
-
-    if (destination == 'archive') {
-      final moved = await widget.controller.archiveAllProducts();
-      _exitSelectionMode();
-      if (mounted && moved > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.movedCountToArchiveMsg(moved))),
-        );
-      }
-    } else {
-      final moved = await widget.controller.moveAllProductsToTrash();
-      _exitSelectionMode();
-      if (mounted && moved > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.movedCountToTrashMsg(moved))),
-        );
-      }
-    }
-  }
 
   Future<String?> _promptTargetGroup({String? excludeCategory}) {
     final strings = widget.controller.strings;
@@ -700,7 +730,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
       toCategory,
     );
     if (_selectedCategory == fromCategory) {
-      setState(() => _selectedCategory = toCategory.trim());
+      _setSelectedCategory(toCategory.trim());
     }
     if (mounted && moved > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -726,7 +756,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     if (name == null || name.trim().isEmpty) return;
     final created = await widget.controller.createCategory(name);
     if (created != null && mounted) {
-      setState(() => _selectedCategory = created);
+      _setSelectedCategory(created);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.groupCreatedMsg(created))),
       );
@@ -737,7 +767,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final strings = widget.controller.strings;
     final products = widget.controller.products;
     final counts = <String, int>{};
-    final units = <String, int>{};
+    final units = <String, double>{};
     for (final p in products) {
       final cat = p.category.trim().isEmpty ? 'General' : p.category.trim();
       counts[cat] = (counts[cat] ?? 0) + 1;
@@ -777,7 +807,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       ),
                       onTap: () {
                         Navigator.of(sheetCtx).pop();
-                        setState(() => _selectedCategory = null);
+                        _setSelectedCategory(null);
                       },
                     );
                   }
@@ -790,7 +820,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     ),
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
-                      setState(() => _selectedCategory = cat);
+                      _setSelectedCategory(cat);
                     },
                   );
                 },
@@ -812,7 +842,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
         controller: widget.controller,
         onSelectCategory: (cat) {
           Navigator.of(sheetCtx).pop();
-          setState(() => _selectedCategory = cat);
+          _setSelectedCategory(cat);
         },
       ),
     );
@@ -909,22 +939,49 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
-  void _openDuplicateChecker() {
-    widget.controller.trackFeatureUsage(FeatureUsageKeys.duplicateCheck);
-    final groups = widget.controller.findLocalDuplicateGroups();
-    if (groups.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.controller.strings.noDuplicatesFoundMsg)),
-      );
-      return;
-    }
+
+
+  void _openCatalogHealth() {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (_) => _LocalDuplicatesSheet(
+      builder: (_) => CatalogHealthSheet(
         controller: widget.controller,
         onEditProduct: (product) => _openProductForm(existing: product),
+      ),
+    );
+  }
+
+  void _openSuppliersDirectory() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => SuppliersSheet(controller: widget.controller),
+    );
+  }
+
+  void _openPriceList() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => PriceListSheet(
+        controller: widget.controller,
+        initialCategory: _selectedCategory,
+      ),
+    );
+  }
+
+  void _openFrozenCash() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => FrozenCashSheet(
+        controller: widget.controller,
+        onEditPrice: (product) => _openQuickEdit(product),
       ),
     );
   }
@@ -941,7 +998,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
           });
         }
         final strings = widget.controller.strings;
-        final soldUnitsByProduct = _computeSoldUnitsByProduct();
+        final soldUnitsByProduct = widget.controller.soldUnitsByProduct;
+        final daysLeftByProduct =
+            widget.controller.estimatedDaysOfStockByProduct();
         final products = _filteredProducts(soldUnitsByProduct);
         final showControls =
             _controlsVisible || _selectionMode || products.isEmpty;
@@ -1066,57 +1125,191 @@ class _InventoryScreenState extends State<InventoryScreen> {
               : AppBar(
                   title: Text(strings.shopInventory),
                   actions: [
-                    if (!isCashier && widget.controller.products.isNotEmpty)
+                    if (!isCashier &&
+                        widget.controller.priceTagQueueProducts.isNotEmpty)
                       IconButton(
-                        tooltip: strings.dailyAdviceTitle,
-                        onPressed: _openDailyAdvice,
+                        tooltip: strings.priceTagQueueTitle,
+                        onPressed: _openPriceTagQueue,
                         icon: Badge(
-                          isLabelVisible: dailyAdvices.isNotEmpty,
-                          backgroundColor: dailyAdvices.any(
-                            (a) => a.severity == AdviceSeverity.urgent,
-                          )
-                              ? Theme.of(context).colorScheme.error
-                              : Theme.of(context).colorScheme.primary,
-                          label: Text('${dailyAdvices.length}'),
-                          child: const Icon(Icons.tips_and_updates_outlined),
-                        ),
-                      ),
-                    if (!isCashier)
-                      IconButton(
-                        tooltip: strings.changeHistoryBtn,
-                        onPressed: _openChangeHistory,
-                        icon: Badge(
-                          isLabelVisible:
-                              widget.controller.productChanges.isNotEmpty,
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
-                          textColor: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant,
+                          backgroundColor:
+                              Theme.of(context).colorScheme.tertiary,
                           label: Text(
-                            '${widget.controller.productChanges.length}',
+                            '${widget.controller.priceTagQueueProducts.length}',
                           ),
-                          child: const Icon(Icons.history),
+                          child: const Icon(Icons.sell_outlined),
                         ),
                       ),
+
                     if (!isCashier)
                       PopupMenuButton<String>(
+                        icon: Badge(
+                          isLabelVisible: widget.controller.hasStockInDraft ||
+                              widget.controller.hasStocktakeDraft,
+                          child: const Icon(Icons.more_vert),
+                        ),
                         onSelected: (value) {
+                          if (value == 'stock_in') _openStockIn();
+                          if (value == 'stocktake') _openStocktake();
+                          if (value == 'purchase_order') _openPurchaseOrder();
+                          if (value == 'price_list') _openPriceList();
+                          if (value == 'suppliers') _openSuppliersDirectory();
+                          if (value == 'daily_advice') _openDailyAdvice();
+                          if (value == 'frozen_cash') _openFrozenCash();
+                          if (value == 'change_history') _openChangeHistory();
+                          if (value == 'toggle_summary') {
+                            setState(
+                              () => _showSummaryHeader = !_showSummaryHeader,
+                            );
+                          }
                           if (value == 'select') _enterSelectionMode();
-                          if (value == 'check_duplicates') {
-                            _openDuplicateChecker();
+                          if (value == 'catalog_health') {
+                            _openCatalogHealth();
                           }
                           if (value == 'new_group') _promptCreateGroup();
                           if (value == 'move_group') _promptMoveGroupToGroup();
-                          if (value == 'group_archive_trash') {
-                            _promptDeleteGroupToTrash();
-                          }
-                          if (value == 'all_archive_trash') {
-                            _confirmMoveAllToTrash();
-                          }
                         },
                         itemBuilder: (context) => [
+                          if (widget.controller.products.isNotEmpty) ...[
+                            PopupMenuItem(
+                              value: 'stock_in',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(
+                                  Icons.local_shipping_outlined,
+                                ),
+                                title: Text(
+                                  widget.controller.hasStockInDraft
+                                      ? (widget.controller.stockInDraft!
+                                                  .totalUnits >
+                                              0
+                                          ? '${strings.stockInBtn} (${formatQty(widget.controller.stockInDraft!.totalUnits)})'
+                                          : '${strings.stockInBtn} •')
+                                      : strings.stockInBtn,
+                                ),
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'stocktake',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.fact_check_outlined),
+                                title: Text(
+                                  widget.controller.hasStocktakeDraft
+                                      ? (widget.controller.stocktakeDraft!
+                                              .counts.isNotEmpty
+                                          ? '${strings.stocktakeBtn} (${widget.controller.stocktakeDraft!.counts.length})'
+                                          : '${strings.stocktakeBtn} •')
+                                      : strings.stocktakeBtn,
+                                ),
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'purchase_order',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading:
+                                    const Icon(Icons.shopping_bag_outlined),
+                                title: Builder(
+                                  builder: (_) {
+                                    final count = widget.controller
+                                        .buildPurchaseOrderSuggestions()
+                                        .length;
+                                    return Text(
+                                      count > 0
+                                          ? '${strings.purchaseOrderBtn} ($count)'
+                                          : strings.purchaseOrderBtn,
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'price_list',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.list_alt_outlined),
+                                title: Text(strings.sendPriceListBtn),
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'suppliers',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.storefront_outlined),
+                                title: Text(
+                                  widget.controller.totalSupplierDebt > 0.009
+                                      ? '${strings.suppliersDirectoryBtn} • ${formatMoney(widget.controller.totalSupplierDebt, widget.controller.currency)}'
+                                      : strings.suppliersDirectoryBtn,
+                                ),
+                              ),
+                            ),
+                            const PopupMenuDivider(),
+                          ],
+                          if (widget.controller.products.isNotEmpty)
+                            PopupMenuItem(
+                              value: 'daily_advice',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(
+                                  Icons.tips_and_updates_outlined,
+                                ),
+                                title: Text(
+                                  dailyAdvices.isNotEmpty
+                                      ? '${strings.dailyAdviceTitle} (${dailyAdvices.length})'
+                                      : strings.dailyAdviceTitle,
+                                ),
+                              ),
+                            ),
+                          if (widget.controller.products.isNotEmpty)
+                            PopupMenuItem(
+                              value: 'frozen_cash',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(
+                                  Icons.savings_outlined,
+                                ),
+                                title: Text(strings.frozenCashBtn),
+                              ),
+                            ),
+                          PopupMenuItem(
+                            value: 'change_history',
+                            child: ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.history),
+                              title: Text(
+                                widget.controller.productChanges.isNotEmpty
+                                    ? '${strings.changeHistoryBtn} (${widget.controller.productChanges.length})'
+                                    : strings.changeHistoryBtn,
+                              ),
+                            ),
+                          ),
+                          if (widget.controller.products.isNotEmpty)
+                            PopupMenuItem(
+                              value: 'toggle_summary',
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(
+                                  _showSummaryHeader
+                                      ? Icons.unfold_less
+                                      : Icons.unfold_more,
+                                ),
+                                title: Text(
+                                  _showSummaryHeader
+                                      ? strings.hideSummaryHeaderTooltip
+                                      : strings.showSummaryHeaderTooltip,
+                                ),
+                              ),
+                            ),
+                          const PopupMenuDivider(),
                           if (widget.controller.products.isNotEmpty)
                             PopupMenuItem(
                               value: 'select',
@@ -1127,14 +1320,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 title: Text(strings.selectItemsBtn),
                               ),
                             ),
+
                           if (widget.controller.products.isNotEmpty)
                             PopupMenuItem(
-                              value: 'check_duplicates',
+                              value: 'catalog_health',
                               child: ListTile(
                                 dense: true,
                                 contentPadding: EdgeInsets.zero,
-                                leading: const Icon(Icons.copy_all_outlined),
-                                title: Text(strings.duplicateCheckBtn),
+                                leading: const Icon(
+                                  Icons.health_and_safety_outlined,
+                                ),
+                                title: Text(strings.catalogHealthBtn),
                               ),
                             ),
                           PopupMenuItem(
@@ -1158,35 +1354,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   Icons.drive_file_move_outlined,
                                 ),
                                 title: Text(strings.moveGroupAction),
-                              ),
-                            ),
-                            const PopupMenuDivider(),
-                            PopupMenuItem(
-                              value: 'group_archive_trash',
-                              child: ListTile(
-                                dense: true,
-                                contentPadding: EdgeInsets.zero,
-                                leading: const Icon(
-                                  Icons.folder_delete_outlined,
-                                ),
-                                title: Text(strings.groupArchiveOrTrashAction),
-                              ),
-                            ),
-                            PopupMenuItem(
-                              value: 'all_archive_trash',
-                              child: ListTile(
-                                dense: true,
-                                contentPadding: EdgeInsets.zero,
-                                leading: Icon(
-                                  Icons.delete_sweep_outlined,
-                                  color: Theme.of(context).colorScheme.error,
-                                ),
-                                title: Text(
-                                  strings.allArchiveOrTrashAction,
-                                  style: TextStyle(
-                                    color: Theme.of(context).colorScheme.error,
-                                  ),
-                                ),
                               ),
                             ),
                           ],
@@ -1221,7 +1388,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   duration: const Duration(milliseconds: 220),
                   curve: Curves.easeOutCubic,
                   alignment: Alignment.topCenter,
-                  child: showControls
+                  child: (showControls && _showSummaryHeader)
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -1263,17 +1430,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   () => _dismissedAdviceDayKey = _todayKey,
                                 ),
                               ),
-                            if (groupProducts.isNotEmpty &&
-                                _searchQuery.isEmpty &&
-                                !_selectionMode)
-                              _InventoryHighlightsStrip(
-                                controller: widget.controller,
-                                products: groupProducts,
-                                soldUnitsByProduct: soldUnitsByProduct,
-                                activeSort: _sortBy,
-                                isCashier: isCashier,
-                                onSelectSort: _selectSort,
-                              ),
                           ],
                         )
                       : const SizedBox.shrink(),
@@ -1291,15 +1447,31 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         decoration: InputDecoration(
                           hintText: strings.searchGoodsHint,
                           prefixIcon: const Icon(Icons.search),
-                          suffixIcon: _searchQuery.isNotEmpty
-                              ? IconButton(
+                          suffixIcon: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_searchQuery.isNotEmpty)
+                                IconButton(
                                   onPressed: () {
                                     _searchController.clear();
                                     setState(() => _searchQuery = '');
                                   },
                                   icon: const Icon(Icons.clear),
-                                )
-                              : null,
+                                ),
+                              VoiceSearchButton(
+                                strings: strings,
+                                language: widget.controller.language,
+                                onResult: (text) {
+                                  _searchController.text = text;
+                                  _searchController.selection =
+                                      TextSelection.collapsed(
+                                    offset: text.length,
+                                  );
+                                  setState(() => _searchQuery = text);
+                                },
+                              ),
+                            ],
+                          ),
                           border: const OutlineInputBorder(),
                           isDense: true,
                         ),
@@ -1366,42 +1538,79 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            if (!isCashier &&
+                                !_selectionMode &&
+                                widget.controller.products.isNotEmpty)
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: FilledButton.tonalIcon(
+                                        onPressed: _openStockIn,
+                                        style: FilledButton.styleFrom(
+                                          visualDensity: VisualDensity.compact,
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 8,
+                                          ),
+                                        ),
+                                        icon: const Icon(
+                                          Icons.local_shipping_outlined,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          widget.controller.hasStockInDraft
+                                              ? (widget.controller.stockInDraft!
+                                                          .totalUnits >
+                                                      0
+                                                  ? '${strings.stockInBtn} (${formatQty(widget.controller.stockInDraft!.totalUnits)})'
+                                                  : '${strings.stockInBtn} •')
+                                              : strings.stockInBtn,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: OutlinedButton.icon(
+                                        onPressed: _openStocktake,
+                                        style: OutlinedButton.styleFrom(
+                                          visualDensity: VisualDensity.compact,
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 8,
+                                          ),
+                                        ),
+                                        icon: const Icon(
+                                          Icons.fact_check_outlined,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          widget.controller.hasStocktakeDraft
+                                              ? (widget.controller
+                                                      .stocktakeDraft!
+                                                      .counts
+                                                      .isNotEmpty
+                                                  ? '${strings.stocktakeBtn} (${widget.controller.stocktakeDraft!.counts.length})'
+                                                  : '${strings.stocktakeBtn} •')
+                                              : strings.stocktakeBtn,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             SizedBox(
                 height: 48,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   children: [
-                    if (!isCashier && widget.controller.products.isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ActionChip(
-                          avatar: const Icon(Icons.local_shipping_outlined, size: 18),
-                          label: Text(
-                            widget.controller.hasStockInDraft
-                                ? (widget.controller.stockInDraft!.totalUnits > 0
-                                    ? '${strings.stockInBtn} (${widget.controller.stockInDraft!.totalUnits})'
-                                    : '${strings.stockInBtn} •')
-                                : strings.stockInBtn,
-                          ),
-                          onPressed: _openStockIn,
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ActionChip(
-                          avatar: const Icon(Icons.fact_check_outlined, size: 18),
-                          label: Text(
-                            widget.controller.hasStocktakeDraft
-                                ? (widget.controller.stocktakeDraft!.counts.isNotEmpty
-                                    ? '${strings.stocktakeBtn} (${widget.controller.stocktakeDraft!.counts.length})'
-                                    : '${strings.stocktakeBtn} •')
-                                : strings.stocktakeBtn,
-                          ),
-                          onPressed: _openStocktake,
-                        ),
-                      ),
-                    ],
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: ChoiceChip(
@@ -1409,8 +1618,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           '${strings.allCategory} (${widget.controller.products.length})',
                         ),
                         selected: _selectedCategory == null,
-                        onSelected: (_) =>
-                            setState(() => _selectedCategory = null),
+                        onSelected: (_) => _setSelectedCategory(null),
                       ),
                     ),
                     for (final category in categories)
@@ -1425,21 +1633,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               '$category (${categoryCounts[category] ?? 0})',
                             ),
                             selected: _selectedCategory == category,
-                            onSelected: (_) =>
-                                setState(() => _selectedCategory = category),
+                            onSelected: (_) => _setSelectedCategory(category),
                           ),
-                        ),
-                      ),
-                    if (!isCashier && !_selectionMode)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ActionChip(
-                          avatar: const Icon(
-                            Icons.create_new_folder_outlined,
-                            size: 18,
-                          ),
-                          label: Text(strings.newGroupBtn),
-                          onPressed: _promptCreateGroup,
                         ),
                       ),
                   ],
@@ -1457,10 +1652,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         child: InputChip(
                           avatar: const Icon(Icons.swap_vert_rounded, size: 16),
                           label: Text(_sortOptionLabel(_sortBy, strings)),
-                          onDeleted: () =>
-                              setState(() => _sortBy = _ProductSort.newest),
-                          onPressed: () =>
-                              setState(() => _sortBy = _ProductSort.newest),
+                          onDeleted: () => _selectSort(_ProductSort.newest),
+                          onPressed: () => _selectSort(_ProductSort.newest),
                         ),
                       ),
                     Padding(
@@ -1475,45 +1668,49 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         ),
                       ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        avatar: inMinusCount > 0
-                            ? Icon(
-                                Icons.warning_amber_rounded,
-                                size: 16,
-                                color: Theme.of(context).colorScheme.error,
-                              )
-                            : null,
-                        label: Text(
-                          strings.inMinusFilter(inMinusCount),
-                          style: inMinusCount > 0
-                              ? TextStyle(
+                    if (inMinusCount > 0 ||
+                        _stockFilter == _StockFilter.inMinus)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: FilterChip(
+                          avatar: inMinusCount > 0
+                              ? Icon(
+                                  Icons.warning_amber_rounded,
+                                  size: 16,
                                   color: Theme.of(context).colorScheme.error,
-                                  fontWeight: FontWeight.w600,
                                 )
                               : null,
-                        ),
-                        selected: _stockFilter == _StockFilter.inMinus,
-                        onSelected: (selected) => setState(
-                          () => _stockFilter = selected
-                              ? _StockFilter.inMinus
-                              : _StockFilter.all,
-                        ),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        label: Text(strings.outOfStockFilter(outOfStockCount)),
-                        selected: _stockFilter == _StockFilter.outOfStock,
-                        onSelected: (selected) => setState(
-                          () => _stockFilter = selected
-                              ? _StockFilter.outOfStock
-                              : _StockFilter.all,
+                          label: Text(
+                            strings.inMinusFilter(inMinusCount),
+                            style: inMinusCount > 0
+                                ? TextStyle(
+                                    color: Theme.of(context).colorScheme.error,
+                                    fontWeight: FontWeight.w600,
+                                  )
+                                : null,
+                          ),
+                          selected: _stockFilter == _StockFilter.inMinus,
+                          onSelected: (selected) => setState(
+                            () => _stockFilter = selected
+                                ? _StockFilter.inMinus
+                                : _StockFilter.all,
+                          ),
                         ),
                       ),
-                    ),
+                    if (outOfStockCount > 0 ||
+                        _stockFilter == _StockFilter.outOfStock)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: FilterChip(
+                          label: Text(strings.outOfStockFilter(outOfStockCount)),
+                          selected: _stockFilter == _StockFilter.outOfStock,
+                          onSelected: (selected) => setState(
+                            () => _stockFilter = selected
+                                ? _StockFilter.outOfStock
+                                : _StockFilter.all,
+                          ),
+                        ),
+                      ),
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: FilterChip(
@@ -1566,6 +1763,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 soldUnits: _sortBy == _ProductSort.mostSold
                                     ? (soldUnitsByProduct[product.id] ?? 0)
                                     : null,
+                                daysLeft: daysLeftByProduct[product.id],
                                 isCashier: isCashier,
                                 selectionMode: _selectionMode,
                                 selected: _selectedIds.contains(product.id),
@@ -1574,11 +1772,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 onLongPress: isCashier
                                     ? null
                                     : () => _enterSelectionMode(product.id),
-                                onAdjustStock: (delta) =>
-                                    widget.controller.adjustStock(
-                                  product.id,
-                                  delta,
-                                ),
                                 onEdit: () =>
                                     _openProductForm(existing: product),
                                 onQuickEdit: () => _openQuickEdit(product),
@@ -1645,9 +1838,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                   await widget.controller
                                       .archiveProduct(product.id);
                                   if (mounted) {
+                                    messenger.hideCurrentSnackBar();
                                     messenger.showSnackBar(
                                       SnackBar(
+                                        duration: const Duration(seconds: 4),
                                         content: Text(strings.movedToArchiveMsg),
+                                        action: SnackBarAction(
+                                          label: strings.undoAction,
+                                          onPressed: () => widget.controller
+                                              .unarchiveProduct(product.id),
+                                        ),
                                       ),
                                     );
                                   }
@@ -2002,203 +2202,17 @@ class _MetricTile extends StatelessWidget {
   }
 }
 
-class _InventoryHighlightsStrip extends StatelessWidget {
-  const _InventoryHighlightsStrip({
-    required this.controller,
-    required this.products,
-    required this.soldUnitsByProduct,
-    required this.activeSort,
-    required this.isCashier,
-    required this.onSelectSort,
-  });
-
-  final ShopController controller;
-  final List<Product> products;
-  final Map<String, int> soldUnitsByProduct;
-  final _ProductSort activeSort;
-  final bool isCashier;
-  final ValueChanged<_ProductSort> onSelectSort;
-
-  @override
-  Widget build(BuildContext context) {
-    if (products.isEmpty) return const SizedBox.shrink();
-    final theme = Theme.of(context);
-    final strings = controller.strings;
-    final currency = controller.currency;
-
-    final latest = products.first;
-    Product mostExpensive = products.first;
-    Product? cheapestPositive;
-    Product cheapestAny = products.first;
-    Product mostStock = products.first;
-    Product? bestSeller;
-    int bestSellerQty = 0;
-    Product highestMargin = products.first;
-
-    for (final p in products) {
-      if (p.sellPrice > mostExpensive.sellPrice) mostExpensive = p;
-      if (p.sellPrice < cheapestAny.sellPrice) cheapestAny = p;
-      if (p.sellPrice > 0 &&
-          (cheapestPositive == null ||
-              p.sellPrice < cheapestPositive.sellPrice)) {
-        cheapestPositive = p;
-      }
-      if (p.stock > mostStock.stock) mostStock = p;
-      final sold = soldUnitsByProduct[p.id] ?? 0;
-      if (sold > bestSellerQty) {
-        bestSellerQty = sold;
-        bestSeller = p;
-      }
-      if (p.marginPercent > highestMargin.marginPercent) highestMargin = p;
-    }
-    final cheapest = cheapestPositive ?? cheapestAny;
-
-    final cards = <({
-      String title,
-      Product product,
-      String metric,
-      IconData icon,
-      Color tint,
-      _ProductSort sort,
-    })>[
-      (
-        title: strings.highlightLatestAdded,
-        product: latest,
-        metric: formatMoney(latest.sellPrice, currency),
-        icon: Icons.fiber_new_outlined,
-        tint: theme.colorScheme.primaryContainer,
-        sort: _ProductSort.newest,
-      ),
-      if (bestSeller != null)
-        (
-          title: strings.highlightBestSeller,
-          product: bestSeller,
-          metric: strings.soldUnitsBadge(bestSellerQty),
-          icon: Icons.local_fire_department_outlined,
-          tint: Colors.orange.shade100,
-          sort: _ProductSort.mostSold,
-        ),
-      (
-        title: strings.highlightMostExpensive,
-        product: mostExpensive,
-        metric: formatMoney(mostExpensive.sellPrice, currency),
-        icon: Icons.trending_up,
-        tint: theme.colorScheme.secondaryContainer,
-        sort: _ProductSort.priceDesc,
-      ),
-      (
-        title: strings.highlightCheapest,
-        product: cheapest,
-        metric: formatMoney(cheapest.sellPrice, currency),
-        icon: Icons.trending_down,
-        tint: theme.colorScheme.surfaceContainerHighest,
-        sort: _ProductSort.priceAsc,
-      ),
-      (
-        title: strings.highlightMostStock,
-        product: mostStock,
-        metric: strings.unitsCount(mostStock.stock),
-        icon: Icons.inventory_2_outlined,
-        tint: Colors.green.shade100,
-        sort: _ProductSort.stockDesc,
-      ),
-      if (!isCashier)
-        (
-          title: strings.highlightHighestMargin,
-          product: highestMargin,
-          metric: '${highestMargin.marginPercent.toStringAsFixed(0)}%',
-          icon: Icons.percent,
-          tint: theme.colorScheme.tertiaryContainer,
-          sort: _ProductSort.marginDesc,
-        ),
-    ];
-
-    return SizedBox(
-      height: 76,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
-        itemCount: cards.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (_, index) {
-          final item = cards[index];
-          final isActive = activeSort == item.sort;
-          return Material(
-            color: item.tint.withValues(alpha: isActive ? 0.95 : 0.65),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: isActive
-                  ? BorderSide(color: theme.colorScheme.primary, width: 1.8)
-                  : BorderSide.none,
-            ),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () => onSelectSort(item.sort),
-              child: SizedBox(
-                width: 162,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 7,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(item.icon, size: 14),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
-                              item.title,
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        item.product.name,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        item.metric,
-                        style: theme.textTheme.labelSmall,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
 class _ProductCard extends StatelessWidget {
   const _ProductCard({
     required this.controller,
     required this.product,
     this.soldUnits,
+    this.daysLeft,
     required this.isCashier,
     this.selectionMode = false,
     this.selected = false,
     this.onToggleSelect,
     this.onLongPress,
-    required this.onAdjustStock,
     required this.onEdit,
     this.onQuickEdit,
     this.onDuplicate,
@@ -2213,13 +2227,13 @@ class _ProductCard extends StatelessWidget {
 
   final ShopController controller;
   final Product product;
-  final int? soldUnits;
+  final double? soldUnits;
+  final int? daysLeft;
   final bool isCashier;
   final bool selectionMode;
   final bool selected;
   final VoidCallback? onToggleSelect;
   final VoidCallback? onLongPress;
-  final ValueChanged<int> onAdjustStock;
   final VoidCallback onEdit;
   final VoidCallback? onQuickEdit;
   final VoidCallback? onDuplicate;
@@ -2250,12 +2264,20 @@ class _ProductCard extends StatelessWidget {
       stockLabel = oosDays > 0
           ? '${strings.outOfStock} • ${strings.daysShort(oosDays)}'
           : strings.outOfStock;
-    } else if (product.isLowStock) {
+    } else if (product.isLowStock || (daysLeft != null && daysLeft! <= 4)) {
       badgeColor = Colors.amber.shade100;
-      stockLabel = strings.lowStockBadge(product.stock);
+      final base = product.isLowStock
+          ? strings.lowStockBadge(product.stock)
+          : strings.inStockBadge(product.stock);
+      stockLabel = daysLeft != null
+          ? '$base • ${strings.approxDaysLeftShort(daysLeft!)}'
+          : base;
     } else {
       badgeColor = Colors.green.shade100;
-      stockLabel = strings.inStockBadge(product.stock);
+      final base = strings.inStockBadge(product.stock);
+      stockLabel = daysLeft != null
+          ? '$base • ${strings.approxDaysLeftShort(daysLeft!)}'
+          : base;
     }
 
     return Card(
@@ -2279,6 +2301,18 @@ class _ProductCard extends StatelessWidget {
                       value: selected,
                       onChanged: (_) => onToggleSelect?.call(),
                     ),
+                  if (product.imagePath.trim().isNotEmpty) ...[
+                    ProductThumbnail(
+                      imagePath: product.imagePath,
+                      size: 46,
+                      onTap: () => showProductPhotoPreview(
+                        context,
+                        title: product.name,
+                        imagePath: product.imagePath,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2304,34 +2338,11 @@ class _ProductCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 2),
-                      Text(
-                        [
+                      if (product.category.isNotEmpty)
+                        Text(
                           product.category,
-                          if (product.nomenclature.isNotEmpty)
-                            '${strings.nomenclatureLabel}: ${product.nomenclature}',
-                          if (product.sku.isNotEmpty) 'SKU: ${product.sku}',
-                        ].join(' • '),
-                        style: theme.textTheme.bodySmall,
-                      ),
-                      if (product.packQty.isNotEmpty ||
-                          product.boxQty.isNotEmpty ||
-                          product.unitWeight.isNotEmpty ||
-                          product.unit.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Text(
-                            [
-                              if (product.packQty.isNotEmpty)
-                                '${strings.packQtyLabel}: ${product.packQty}',
-                              if (product.boxQty.isNotEmpty)
-                                '${strings.boxQtyLabel}: ${product.boxQty}',
-                              if (product.unitWeight.isNotEmpty)
-                                '${strings.unitWeightLabel}: ${product.unitWeight}',
-                              if (product.unit.isNotEmpty) product.unit,
-                            ].join(' • '),
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
                     ],
@@ -2376,28 +2387,12 @@ class _ProductCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    isCashier
-                        ? '${strings.sellShort}: ${formatMoney(product.sellPrice, currency)}'
-                            '${product.hasWholesalePrice ? '  •  ${strings.wholesaleShort}: ${formatMoney(product.wholesalePrice, currency)}' : ''}'
-                        : '${strings.sellShort}: ${formatMoney(product.sellPrice, currency)}'
-                            '${product.hasWholesalePrice ? '  •  ${strings.wholesaleShort}: ${formatMoney(product.wholesalePrice, currency)}' : ''}  •  '
-                            '${strings.costShort}: ${formatMoney(product.costPrice, currency)}  •  '
-                            '${strings.marginShort}: ${product.marginPercent.toStringAsFixed(0)}%',
+                    '${strings.sellShort}: ${formatMoney(product.sellPrice, currency)}'
+                    '${product.hasWholesalePrice ? '  •  ${strings.wholesaleShort}: ${formatMoney(product.wholesalePrice, currency)}${product.wholesaleMinQty > 0 ? ' (${strings.wholesaleFromQtyBadge(product.wholesaleMinQty)})' : ''}' : ''}',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
                 if (!isCashier) ...[
-                  IconButton(
-                    onPressed:
-                        product.stock > 0 ? () => onAdjustStock(-1) : null,
-                    icon: const Icon(Icons.remove_circle_outline),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  IconButton(
-                    onPressed: () => onAdjustStock(1),
-                    icon: const Icon(Icons.add_circle_outline),
-                    visualDensity: VisualDensity.compact,
-                  ),
                   IconButton(
                     tooltip: strings.edit,
                     onPressed: onEdit,
@@ -2708,6 +2703,7 @@ class _QuickEditResult {
     this.sellPrice = 0,
     this.costPrice = 0,
     this.wholesalePrice = 0,
+    this.wholesaleMinQty = 0,
     this.stock = 0,
   });
 
@@ -2715,7 +2711,8 @@ class _QuickEditResult {
   final double sellPrice;
   final double costPrice;
   final double wholesalePrice;
-  final int stock;
+  final int wholesaleMinQty;
+  final double stock;
 }
 
 class _QuickEditProductDialog extends StatefulWidget {
@@ -2737,6 +2734,7 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
   late final TextEditingController _sellCtrl;
   late final TextEditingController _costCtrl;
   late final TextEditingController _wholesaleCtrl;
+  late final TextEditingController _wholesaleMinQtyCtrl;
   late final TextEditingController _stockCtrl;
 
   @override
@@ -2753,6 +2751,11 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
           ? widget.product.wholesalePrice.toStringAsFixed(0)
           : '',
     );
+    _wholesaleMinQtyCtrl = TextEditingController(
+      text: widget.product.wholesaleMinQty > 0
+          ? '${widget.product.wholesaleMinQty}'
+          : '',
+    );
     _stockCtrl = TextEditingController(text: '${widget.product.stock}');
   }
 
@@ -2761,6 +2764,7 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
     _sellCtrl.dispose();
     _costCtrl.dispose();
     _wholesaleCtrl.dispose();
+    _wholesaleMinQtyCtrl.dispose();
     _stockCtrl.dispose();
     super.dispose();
   }
@@ -2796,13 +2800,18 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
     final wholesaleRaw = _wholesaleCtrl.text.trim().replaceAll(',', '.');
     final wholesale =
         wholesaleRaw.isEmpty ? 0.0 : double.tryParse(wholesaleRaw);
-    final stock = int.tryParse(_stockCtrl.text.trim());
+    final minQtyRaw = _wholesaleMinQtyCtrl.text.trim();
+    final wholesaleMinQty =
+        minQtyRaw.isEmpty ? 0 : int.tryParse(minQtyRaw);
+    final stock = parseQty(_stockCtrl.text);
     if (sell == null ||
         sell < 0 ||
         cost == null ||
         cost < 0 ||
         wholesale == null ||
         wholesale < 0 ||
+        wholesaleMinQty == null ||
+        wholesaleMinQty < 0 ||
         stock == null ||
         stock < 0) {
       return;
@@ -2812,6 +2821,7 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
         sellPrice: sell,
         costPrice: cost,
         wholesalePrice: wholesale,
+        wholesaleMinQty: wholesaleMinQty,
         stock: stock,
       ),
     );
@@ -2886,6 +2896,7 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
             Row(
               children: [
                 Expanded(
+                  flex: 3,
                   child: TextField(
                     controller: _wholesaleCtrl,
                     textInputAction: TextInputAction.next,
@@ -2905,25 +2916,38 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
+                  flex: 2,
                   child: TextField(
-                    controller: _stockCtrl,
-                    textInputAction: TextInputAction.done,
+                    controller: _wholesaleMinQtyCtrl,
+                    textInputAction: TextInputAction.next,
                     keyboardType: TextInputType.number,
                     decoration: InputDecoration(
-                      labelText: strings.stockQtyRequired,
+                      labelText: strings.wholesaleMinQtyLabel,
+                      hintText: '5',
                       border: const OutlineInputBorder(),
                       isDense: true,
-                      suffixIcon: IconButton(
-                        tooltip: strings.currencyCalculatorTitle,
-                        onPressed: () =>
-                            _openCalculator(_stockCtrl, integerMode: true),
-                        icon: const Icon(Icons.calculate_outlined, size: 18),
-                      ),
                     ),
-                    onSubmitted: (_) => _save(),
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _stockCtrl,
+              textInputAction: TextInputAction.done,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: strings.stockQtyRequired,
+                border: const OutlineInputBorder(),
+                isDense: true,
+                suffixIcon: IconButton(
+                  tooltip: strings.currencyCalculatorTitle,
+                  onPressed: () =>
+                      _openCalculator(_stockCtrl, integerMode: true),
+                  icon: const Icon(Icons.calculate_outlined, size: 18),
+                ),
+              ),
+              onSubmitted: (_) => _save(),
             ),
           ],
         ),
@@ -2954,7 +2978,7 @@ class _QuickEditProductDialogState extends State<_QuickEditProductDialog> {
   }
 }
 
-class _ProductHistorySheet extends StatelessWidget {
+class _ProductHistorySheet extends StatefulWidget {
   const _ProductHistorySheet({
     required this.controller,
     required this.product,
@@ -2962,6 +2986,25 @@ class _ProductHistorySheet extends StatelessWidget {
 
   final ShopController controller;
   final Product product;
+
+  @override
+  State<_ProductHistorySheet> createState() => _ProductHistorySheetState();
+}
+
+class _ProductHistorySheetState extends State<_ProductHistorySheet> {
+  late List<ProductChangeEntry> _priceHistory;
+
+  @override
+  void initState() {
+    super.initState();
+    _priceHistory = widget.controller.priceChangesForProduct(widget.product.id);
+    widget.controller
+        .loadPriceChangesForProduct(widget.product.id)
+        .then((loaded) {
+      if (!mounted) return;
+      setState(() => _priceHistory = loaded);
+    });
+  }
 
   String? _formatPriceDelta(String oldVal, String newVal) {
     final oldNum = double.tryParse(oldVal.replaceAll(',', '.').trim());
@@ -2985,19 +3028,21 @@ class _ProductHistorySheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final product = widget.product;
     final theme = Theme.of(context);
     final strings = controller.strings;
     final currency = controller.currency;
-    final priceHistory = controller.priceChangesForProduct(product.id);
+    final priceHistory = _priceHistory;
 
     final incoming = <({
       DateTime date,
       String supplier,
       String rateLabel,
-      int qty,
+      double qty,
       double cost,
     })>[];
-    var totalInUnits = 0;
+    var totalInUnits = 0.0;
     var totalInSpend = 0.0;
     for (final rec in controller.stockIns) {
       for (final item in rec.items) {
@@ -3018,12 +3063,12 @@ class _ProductHistorySheet extends StatelessWidget {
     final outgoing = <({
       DateTime date,
       String customer,
-      int qty,
+      double qty,
       double price,
       double cost,
       double profit,
     })>[];
-    var totalOutUnits = 0;
+    var totalOutUnits = 0.0;
     var totalOutRev = 0.0;
     var totalOutProfit = 0.0;
     final isCashier = controller.cashierMode;
@@ -3268,11 +3313,26 @@ class _ProductChangeHistorySheet extends StatefulWidget {
 }
 
 class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> {
+  static const int _pageSize = 60;
   final TextEditingController _searchCtrl = TextEditingController();
   String _query = '';
   String _kindFilter = 'all';
   String _sourceFilter = 'all';
   SalesDateFilter _dateFilter = SalesDateFilter.all;
+  int _visibleLimit = _pageSize;
+  late List<ProductChangeEntry> _allEntries;
+
+  @override
+  void initState() {
+    super.initState();
+    _allEntries = List<ProductChangeEntry>.from(widget.controller.productChanges);
+    widget.controller
+        .loadProductChanges(days: ShopController.changeHistoryRetentionDays)
+        .then((loaded) {
+      if (!mounted) return;
+      setState(() => _allEntries = loaded);
+    });
+  }
 
   @override
   void dispose() {
@@ -3304,6 +3364,7 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
     if (f.label == strings.sellShort) return 'sellPrice';
     if (f.label == strings.costShort) return 'costPrice';
     if (f.label == strings.wholesaleShort) return 'wholesalePrice';
+    if (f.label == strings.wholesaleMinQtyLabel) return 'wholesaleMinQty';
     if (f.kind == 'stock') return 'stock';
     if (f.kind == 'weight') return 'unitWeight';
     if (f.label == strings.categoryLabel) return 'category';
@@ -3333,6 +3394,8 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
         return _fmtNum(product.costPrice);
       case 'wholesalePrice':
         return _fmtNum(product.wholesalePrice);
+      case 'wholesaleMinQty':
+        return '${product.wholesaleMinQty}';
       case 'stock':
         return '${product.stock}';
       case 'unitWeight':
@@ -3475,14 +3538,22 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
       ),
     );
     if (confirmed != true || !mounted) return;
-    final ok = await widget.controller.revertProductChange(entry.id);
+    final ok = await widget.controller.revertProductChange(
+      entry.id,
+      fallbackEntry: entry,
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? strings.revertedMsg : strings.productUnavailableMsg),
       ),
     );
-    if (ok) setState(() {});
+    if (ok) {
+      final reloaded = await widget.controller.loadProductChanges(
+        days: ShopController.changeHistoryRetentionDays,
+      );
+      if (mounted) setState(() => _allEntries = reloaded);
+    }
   }
 
   Future<void> _promptDownloadHistory() async {
@@ -3516,7 +3587,8 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
       ),
     );
     if (days == null || !mounted) return;
-    final entries = widget.controller.productChangesForDays(days);
+    final entries = await widget.controller.loadProductChanges(days: days);
+    if (!mounted) return;
     if (entries.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.noChangesForPeriodMsg)),
@@ -3558,6 +3630,18 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
       ),
     );
     if (choice == null || !mounted) return;
+    if (widget.controller.hasOwnerPin) {
+      final pin = await showPinProtectedDeleteDialog(
+        context,
+        controller: widget.controller,
+        title: strings.clearHistoryTitle,
+        body: choice == '30d'
+            ? strings.clearOlder30DaysAction
+            : strings.clearAllAction,
+        confirmLabel: strings.confirm,
+      );
+      if (pin == null || !mounted) return;
+    }
     final removed = await widget.controller.clearProductChanges(
       olderThanDays: choice == '30d' ? 30 : null,
     );
@@ -3565,7 +3649,10 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(strings.clearedHistoryCountMsg(removed))),
     );
-    setState(() {});
+    final reloaded = await widget.controller.loadProductChanges(
+      days: ShopController.changeHistoryRetentionDays,
+    );
+    if (mounted) setState(() => _allEntries = reloaded);
   }
 
   String _formatDeltaNum(double delta) {
@@ -3623,7 +3710,7 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
     final strings = widget.controller.strings;
     final theme = Theme.of(context);
     final q = _query.trim().toLowerCase();
-    final entries = widget.controller.productChanges.where((e) {
+    final entries = _allEntries.where((e) {
       if (!_matchesDateFilter(e.createdAt)) return false;
       if (_kindFilter != 'all' && !e.hasKind(_kindFilter)) return false;
       if (_sourceFilter != 'all' && e.source != _sourceFilter) return false;
@@ -3632,9 +3719,14 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
           e.fields.any((f) => f.label.toLowerCase().contains(q));
     }).toList();
 
+    final displayedEntries = entries.length > _visibleLimit
+        ? entries.sublist(0, _visibleLimit)
+        : entries;
+    final remainingEntries = entries.length - displayedEntries.length;
+
     final List<({String? header, ProductChangeEntry? entry})> rows = [];
     String? lastBucket;
-    for (final entry in entries) {
+    for (final entry in displayedEntries) {
       final bucket = _bucketTitle(entry.createdAt, strings);
       if (bucket != lastBucket) {
         rows.add((header: bucket, entry: null));
@@ -3665,7 +3757,7 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (widget.controller.productChanges.isNotEmpty) ...[
+                if (_allEntries.isNotEmpty) ...[
                   IconButton(
                     tooltip: strings.copyTsvShortBtn,
                     onPressed: () {
@@ -3701,7 +3793,10 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
             const SizedBox(height: 8),
             TextField(
               controller: _searchCtrl,
-              onChanged: (v) => setState(() => _query = v),
+              onChanged: (v) => setState(() {
+                _query = v;
+                _visibleLimit = _pageSize;
+              }),
               decoration: InputDecoration(
                 prefixIcon: const Icon(Icons.search),
                 hintText: strings.searchGoodsHint,
@@ -3816,8 +3911,22 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
               child: entries.isEmpty
                   ? Center(child: Text(strings.noChangesYetMsg))
                   : ListView.builder(
-                      itemCount: rows.length,
+                      itemCount: rows.length + (remainingEntries > 0 ? 1 : 0),
                       itemBuilder: (_, index) {
+                        if (index >= rows.length) {
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 4, bottom: 12),
+                            child: OutlinedButton.icon(
+                              onPressed: () => setState(
+                                () => _visibleLimit += _pageSize,
+                              ),
+                              icon: const Icon(Icons.expand_more),
+                              label: Text(
+                                strings.showMoreCountBtn(remainingEntries),
+                              ),
+                            ),
+                          );
+                        }
                         final row = rows[index];
                         if (row.header != null) {
                           return Padding(
@@ -4014,145 +4123,4 @@ class _ProductChangeHistorySheetState extends State<_ProductChangeHistorySheet> 
   }
 }
 
-class _LocalDuplicatesSheet extends StatelessWidget {
-  const _LocalDuplicatesSheet({
-    required this.controller,
-    required this.onEditProduct,
-  });
 
-  final ShopController controller;
-  final ValueChanged<Product> onEditProduct;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return ListenableBuilder(
-      listenable: controller,
-      builder: (context, _) {
-        final strings = controller.strings;
-        final currency = controller.currency;
-        final groups = controller.findLocalDuplicateGroups();
-
-        return SizedBox(
-          height: MediaQuery.sizeOf(context).height * 0.80,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        strings.phoneDuplicatesCount(groups.length),
-                        style: theme.textTheme.titleLarge,
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: strings.close,
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: groups.isEmpty
-                      ? Center(child: Text(strings.noDuplicatesFoundMsg))
-                      : ListView.separated(
-                          itemCount: groups.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (_, index) {
-                            final group = groups[index];
-                            return Card(
-                              margin: EdgeInsets.zero,
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      group.reason,
-                                      style:
-                                          theme.textTheme.titleSmall?.copyWith(
-                                        fontWeight: FontWeight.bold,
-                                        color: theme.colorScheme.error,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    for (final product in group.products)
-                                      ListTile(
-                                        dense: true,
-                                        contentPadding: EdgeInsets.zero,
-                                        title: Text(product.name),
-                                        subtitle: Text(
-                                          [
-                                            product.category,
-                                            if (product.sku.isNotEmpty)
-                                              'SKU: ${product.sku}',
-                                            formatMoney(
-                                              product.sellPrice,
-                                              currency,
-                                            ),
-                                            strings.stockCountLabel(
-                                              product.stock,
-                                            ),
-                                          ].join(' • '),
-                                        ),
-                                        trailing: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            IconButton(
-                                              tooltip: strings.edit,
-                                              icon: const Icon(
-                                                Icons.edit_outlined,
-                                                size: 20,
-                                              ),
-                                              onPressed: () =>
-                                                  onEditProduct(product),
-                                            ),
-                                            IconButton(
-                                              tooltip:
-                                                  strings.moveToTrashAction,
-                                              icon: Icon(
-                                                Icons.delete_outline,
-                                                size: 20,
-                                                color: theme.colorScheme.error,
-                                              ),
-                                              onPressed: () async {
-                                                await controller
-                                                    .moveProductToTrash(
-                                                  product.id,
-                                                );
-                                                if (context.mounted) {
-                                                  ScaffoldMessenger.of(context)
-                                                      .showSnackBar(
-                                                    SnackBar(
-                                                      content: Text(
-                                                        strings
-                                                            .movedToTrashMsg,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              },
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}

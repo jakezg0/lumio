@@ -406,16 +406,60 @@ class _CustomersSheetState extends State<CustomersSheet> {
                                               ],
                                             ),
                                             const SizedBox(height: 2),
-                                            Text(
-                                              sale.items
-                                                  .map(
-                                                    (i) =>
-                                                        '${i.productName} × ${i.quantity}',
-                                                  )
-                                                  .join(', '),
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall,
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    sale.items
+                                                        .map(
+                                                          (i) =>
+                                                              '${i.productName} × ${formatQty(i.quantity)}',
+                                                        )
+                                                        .join(', '),
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodySmall,
+                                                  ),
+                                                ),
+                                                TextButton.icon(
+                                                  onPressed: () {
+                                                    final res = widget.controller
+                                                        .repeatSaleToCart(sale);
+                                                    final messenger =
+                                                        ScaffoldMessenger.of(
+                                                      context,
+                                                    );
+                                                    Navigator.of(context).pop();
+                                                    messenger.showSnackBar(
+                                                      SnackBar(
+                                                        content: Text(
+                                                          res.addedLines == 0
+                                                              ? strings
+                                                                  .noAvailableItemsToRepeatMsg
+                                                              : (res.skippedCount >
+                                                                      0
+                                                                  ? strings
+                                                                      .orderRepeatedPartialMsg(
+                                                                      res.addedLines,
+                                                                      res.skippedCount,
+                                                                    )
+                                                                  : strings
+                                                                      .orderRepeatedToCartMsg(
+                                                                      res.addedLines,
+                                                                    )),
+                                                        ),
+                                                      ),
+                                                    );
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.replay,
+                                                    size: 16,
+                                                  ),
+                                                  label: Text(
+                                                    strings.repeatOrderBtn,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
                                           ],
                                         ],

@@ -4,9 +4,11 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/product.dart';
 import '../services/export_service.dart';
+import '../services/thermal_printer_service.dart';
 import '../state/shop_controller.dart';
 import 'formatters.dart';
 import 'receipt_barcode.dart';
+import 'thermal_printer_dialog.dart';
 
 /// Visual barcode widget supporting true GS1 EAN-13 (with guard bars & parity)
 /// and falling back to Code 39 for custom alphanumeric SKUs.
@@ -272,6 +274,7 @@ class _BarcodeLabelSheetState extends State<BarcodeLabelSheet> {
           mimeType: 'application/pdf',
         ),
       ]);
+      await widget.controller.markPriceTagPrinted(_product.id);
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
@@ -547,6 +550,27 @@ class _BarcodeLabelSheetState extends State<BarcodeLabelSheet> {
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
+                onPressed: () async {
+                  await printBytesOrSetupPrinter(
+                    context,
+                    strings: strings,
+                    shopName: widget.controller.shopName,
+                    buildBytes: (cfg) =>
+                        ThermalPrinterService.buildPriceTagEscPos(
+                      product: _product,
+                      currency: widget.controller.currency,
+                      is80mm: cfg.is80mm,
+                      code: code,
+                      shopName: _showShopName ? widget.controller.shopName : '',
+                    ),
+                  );
+                  await widget.controller.markPriceTagPrinted(_product.id);
+                },
+                icon: const Icon(Icons.print_outlined),
+                label: Text(strings.thermalPrintBtn),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
                 onPressed: _exporting ? null : _exportPdf,
                 icon: _exporting
                     ? const SizedBox(
@@ -554,7 +578,7 @@ class _BarcodeLabelSheetState extends State<BarcodeLabelSheet> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.print_outlined),
+                    : const Icon(Icons.picture_as_pdf_outlined),
                 label: Text(strings.shareBarcodePdfBtn),
               ),
             ],

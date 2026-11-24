@@ -9,6 +9,7 @@ import '../models/sale.dart';
 import '../models/stock_in.dart';
 import '../widgets/formatters.dart';
 import 'export_service.dart';
+import 'input_normalizer.dart';
 import 'inventory_storage.dart';
 
 enum ConflictResolution {
@@ -100,6 +101,44 @@ class GoogleSheetsSyncException implements Exception {
   String toString() => message;
 }
 
+class CloudBackupShrinkException implements Exception {
+  const CloudBackupShrinkException({
+    required this.message,
+    required this.prevProducts,
+    required this.currentProducts,
+    required this.prevSales,
+    required this.currentSales,
+  });
+
+  final String message;
+  final int prevProducts;
+  final int currentProducts;
+  final int prevSales;
+  final int currentSales;
+
+  @override
+  String toString() => message;
+}
+
+class CloudTimestampConflictException implements Exception {
+  const CloudTimestampConflictException({
+    required this.message,
+    this.remoteUpdatedAt,
+    this.localLastSyncAt,
+    this.latestLocalDataAt,
+    required this.isCloudNewer,
+  });
+
+  final String message;
+  final DateTime? remoteUpdatedAt;
+  final DateTime? localLastSyncAt;
+  final DateTime? latestLocalDataAt;
+  final bool isCloudNewer;
+
+  @override
+  String toString() => message;
+}
+
 class GoogleSheetsService {
   const GoogleSheetsService();
 
@@ -125,6 +164,7 @@ const HEADERS = [
   'costPrice',
   'sellPrice',
   'wholesalePrice',
+  'wholesaleMinQty',
   'stock',
   'lowStockThreshold',
   'packQty',
@@ -167,9 +207,64 @@ function jsonOut_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+function rotateBackupPrevIfNeeded_(ss, bSheet) {
+  if (!bSheet || bSheet.getLastRow() <= 1) return;
+  const tz = Session.getScriptTimeZone() || 'UTC';
+  const today = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+  const props = PropertiesService.getScriptProperties();
+  const lastDate = props.getProperty('BACKUP_PREV_DATE') || '';
+  let prevSheet = ss.getSheetByName('_Backup_Prev');
+  if (lastDate === today && prevSheet && prevSheet.getLastRow() > 1) {
+    return;
+  }
+  const values = bSheet.getDataRange().getValues();
+  if (values.length <= 1) return;
+  if (!prevSheet) {
+    prevSheet = ss.insertSheet('_Backup_Prev');
+  }
+  prevSheet.clearContents();
+  prevSheet.getRange(1, 1, values.length, values[0].length).setValues(values);
+  props.setProperty('BACKUP_PREV_DATE', today);
+}
+
 function doGet(e) {
   try {
     checkSecret_(e && e.parameter ? e.parameter.secret : '');
+    if (e && e.parameter && e.parameter.action === 'backupMeta') {
+      const ss = SPREADSHEET_ID
+        ? SpreadsheetApp.openById(SPREADSHEET_ID)
+        : SpreadsheetApp.getActiveSpreadsheet();
+      if (!ss) {
+        throw new Error('Укажите SPREADSHEET_ID в скрипте или откройте Apps Script из самой Google Таблицы');
+      }
+      let latestAt = '';
+      let hasBackup = false;
+      const bSheet = ss.getSheetByName('_Backup');
+      if (bSheet && bSheet.getLastRow() > 1) {
+        hasBackup = true;
+        const bValues = bSheet.getDataRange().getValues();
+        const firstHeader = String(bValues[0][0] || '').trim();
+        const tsCol = (firstHeader === 'section') ? 1 : 0;
+        for (let i = 1; i < bValues.length; i++) {
+          const ts = String(bValues[i][tsCol] || '').trim();
+          if (ts > latestAt) latestAt = ts;
+        }
+      }
+      let catalogUpdatedAt = '';
+      const cSheet = ss.getSheetByName(SHEET_NAME);
+      if (cSheet && cSheet.getLastRow() > 1) {
+        const cValues = cSheet.getDataRange().getValues();
+        const headers = cValues[0].map(h => String(h).trim());
+        const tsIdx = headers.indexOf('updatedAt');
+        if (tsIdx >= 0) {
+          for (let i = 1; i < cValues.length; i++) {
+            const ts = String(cValues[i][tsIdx] || '').trim();
+            if (ts > catalogUpdatedAt) catalogUpdatedAt = ts;
+          }
+        }
+      }
+      return jsonOut_({ ok: true, hasBackup, updatedAt: latestAt, catalogUpdatedAt });
+    }
     if (e && e.parameter && e.parameter.action === 'backup') {
       const ss = SPREADSHEET_ID
         ? SpreadsheetApp.openById(SPREADSHEET_ID)
@@ -177,7 +272,8 @@ function doGet(e) {
       if (!ss) {
         throw new Error('Укажите SPREADSHEET_ID в скрипте или откройте Apps Script из самой Google Таблицы');
       }
-      const bSheet = ss.getSheetByName('_Backup');
+      const backupSheetName = (e.parameter.source === 'prev') ? '_Backup_Prev' : '_Backup';
+      const bSheet = ss.getSheetByName(backupSheetName);
       if (!bSheet || bSheet.getLastRow() <= 1) {
         return jsonOut_({ ok: true, sections: {}, backupJson: '', updatedAt: '' });
       }
@@ -257,6 +353,8 @@ function doPost(e) {
       let bSheet = ss.getSheetByName('_Backup');
       if (!bSheet) {
         bSheet = ss.insertSheet('_Backup');
+      } else {
+        rotateBackupPrevIfNeeded_(ss, bSheet);
       }
       const bHeaders = ['section', 'updatedAt', 'chunkIndex', 'totalChunks', 'data'];
       const ts = String(body.updatedAt || new Date().toISOString());
@@ -306,6 +404,8 @@ function doPost(e) {
       let bSheet = ss.getSheetByName('_Backup');
       if (!bSheet) {
         bSheet = ss.insertSheet('_Backup');
+      } else {
+        rotateBackupPrevIfNeeded_(ss, bSheet);
       }
       bSheet.clearContents();
       const bHeaders = ['updatedAt', 'chunkIndex', 'totalChunks', 'data'];
@@ -408,18 +508,13 @@ function doPost(e) {
         .toList();
   }
 
-  static String normalizeName(String raw) {
-    return raw
-        .trim()
-        .toLowerCase()
-        .replaceAll('ё', 'е')
-        .replaceAll(RegExp(r'\s+'), ' ');
-  }
+  static String normalizeName(String raw) =>
+      InputNormalizer.normalizeNameKey(raw);
 
   static Set<String> extractBarcodes(Product p) {
     final codes = <String>{};
     for (final raw in [p.sku, p.packBarcode, p.boxBarcode]) {
-      final clean = raw.trim().toLowerCase();
+      final clean = InputNormalizer.normalizeBarcode(raw).toLowerCase();
       if (clean.isNotEmpty) {
         codes.add(clean);
       }
@@ -753,7 +848,12 @@ function doPost(e) {
       'heldSales': snapshot.heldSales.map((h) => h.toJson()).toList(),
       'negativeStockReminders': snapshot.negativeStockReminders,
       'allowNegativeStock': snapshot.allowNegativeStock,
+      'allowCashierDiscounts': snapshot.allowCashierDiscounts,
       'autoBackupEnabled': snapshot.autoBackupEnabled,
+      if (snapshot.lastExternalBackupAt.isNotEmpty)
+        'lastExternalBackupAt': snapshot.lastExternalBackupAt,
+      if (snapshot.lastExternalBackupReminderAt.isNotEmpty)
+        'lastExternalBackupReminderAt': snapshot.lastExternalBackupReminderAt,
       if (snapshot.sheetCatalogBaseline.isNotEmpty)
         'sheetCatalogBaseline': snapshot.sheetCatalogBaseline,
       if (snapshot.inventorySnapshots.isNotEmpty)
@@ -763,6 +863,8 @@ function doPost(e) {
         'featureUsage': snapshot.featureUsage.map(
           (k, v) => MapEntry(k, v.toJson()),
         ),
+      if (snapshot.trashRetentionDays != 30)
+        'trashRetentionDays': snapshot.trashRetentionDays,
     });
 
     return sections;
@@ -901,7 +1003,11 @@ function doPost(e) {
           .map((k, v) => MapEntry(k, (v as num?)?.toInt() ?? 0))
         ..removeWhere((_, v) => v <= 0),
       allowNegativeStock: (meta['allowNegativeStock'] as bool?) ?? true,
+      allowCashierDiscounts: (meta['allowCashierDiscounts'] as bool?) ?? true,
       autoBackupEnabled: (meta['autoBackupEnabled'] as bool?) ?? true,
+      lastExternalBackupAt: (meta['lastExternalBackupAt'] as String?) ?? '',
+      lastExternalBackupReminderAt:
+          (meta['lastExternalBackupReminderAt'] as String?) ?? '',
       sheetCatalogBaseline:
           (meta['sheetCatalogBaseline'] as Map<String, dynamic>? ?? const {})
               .map((k, v) => MapEntry(k, '$v')),
@@ -910,6 +1016,8 @@ function doPost(e) {
           .map(InventoryValueSnapshot.fromJson)
           .toList(),
       featureUsage: parsedFeatureUsage,
+      trashRetentionDays:
+          (meta['trashRetentionDays'] as num?)?.toInt() ?? 30,
     );
   }
 
@@ -948,7 +1056,8 @@ function doPost(e) {
     return changedCompressedSections.length;
   }
 
-  Future<({ShopDataSnapshot? snapshot, String? updatedAt})> fetchCloudBackup(
+  Future<({bool hasBackup, DateTime? updatedAt, DateTime? catalogUpdatedAt})>
+      fetchCloudBackupMeta(
     String webAppUrl, {
     String secret = '',
   }) async {
@@ -959,7 +1068,90 @@ function doPost(e) {
     final client = _httpClient();
     final baseUri = _buildGetUri(cleanUrl, secret);
     final params = Map<String, String>.from(baseUri.queryParameters);
+    params['action'] = 'backupMeta';
+    final request = await client.getUrl(
+      baseUri.replace(queryParameters: params),
+    );
+    request.followRedirects = true;
+    request.maxRedirects = 6;
+    final response = await request.close();
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw GoogleSheetsSyncException('HTTP ${response.statusCode}: $body');
+    }
+    if (body.trimLeft().startsWith('<')) {
+      throw const GoogleSheetsSyncException(
+        'Google вернул HTML вместо JSON. Проверьте, что в Apps Script в поле «Who has access» выбрано «Anyone».',
+      );
+    }
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const GoogleSheetsSyncException(
+        'Invalid JSON response from Google Sheets',
+      );
+    }
+    if (decoded['ok'] != true) {
+      throw GoogleSheetsSyncException(
+        (decoded['error'] as String?) ?? 'Google Sheets script error',
+      );
+    }
+    if (decoded.containsKey('hasBackup') || decoded.containsKey('updatedAt')) {
+      final hasBackup = decoded['hasBackup'] == true;
+      final rawUpdated = (decoded['updatedAt'] as String?)?.trim() ?? '';
+      final rawCatalogUpdated =
+          (decoded['catalogUpdatedAt'] as String?)?.trim() ?? '';
+      return (
+        hasBackup: hasBackup,
+        updatedAt: DateTime.tryParse(rawUpdated),
+        catalogUpdatedAt: DateTime.tryParse(rawCatalogUpdated),
+      );
+    }
+    // Fallback for older Apps Script deployments that ignore action=backupMeta:
+    // extract max updatedAt from Catalog products and query action=backup.
+    DateTime? catalogUpdatedAt;
+    if (decoded['products'] is List) {
+      for (final row in (decoded['products'] as List)) {
+        if (row is Map<String, dynamic>) {
+          final ts = DateTime.tryParse('${row['updatedAt'] ?? ''}'.trim());
+          if (ts != null &&
+              (catalogUpdatedAt == null || ts.isAfter(catalogUpdatedAt))) {
+            catalogUpdatedAt = ts;
+          }
+        }
+      }
+    }
+    try {
+      final backup = await fetchCloudBackup(cleanUrl, secret: secret);
+      return (
+        hasBackup: backup.snapshot != null,
+        updatedAt: DateTime.tryParse((backup.updatedAt ?? '').trim()),
+        catalogUpdatedAt: catalogUpdatedAt,
+      );
+    } catch (_) {
+      return (
+        hasBackup: false,
+        updatedAt: null,
+        catalogUpdatedAt: catalogUpdatedAt,
+      );
+    }
+  }
+
+  Future<({ShopDataSnapshot? snapshot, String? updatedAt})> fetchCloudBackup(
+    String webAppUrl, {
+    String secret = '',
+    bool usePreviousBackup = false,
+  }) async {
+    final cleanUrl = webAppUrl.trim();
+    if (cleanUrl.isEmpty) {
+      throw const GoogleSheetsSyncException('URL is empty');
+    }
+    final client = _httpClient();
+    final baseUri = _buildGetUri(cleanUrl, secret);
+    final params = Map<String, String>.from(baseUri.queryParameters);
     params['action'] = 'backup';
+    if (usePreviousBackup) {
+      params['source'] = 'prev';
+    }
     final request = await client.getUrl(
       baseUri.replace(queryParameters: params),
     );
@@ -1302,6 +1494,15 @@ function doPost(e) {
         ),
       );
     }
+    if (local.wholesaleMinQty != remote.wholesaleMinQty) {
+      diffs.add(
+        SyncFieldDiff(
+          fieldLabel: strings.wholesaleMinQtyLabel,
+          localValue: '${local.wholesaleMinQty}',
+          remoteValue: '${remote.wholesaleMinQty}',
+        ),
+      );
+    }
     if (local.stock != remote.stock) {
       final delta = remote.stock - local.stock;
       final sign = delta > 0 ? '+' : '';
@@ -1371,6 +1572,7 @@ function doPost(e) {
       'costPrice': p.costPrice,
       'sellPrice': p.sellPrice,
       'wholesalePrice': p.wholesalePrice > 0 ? p.wholesalePrice : '',
+      'wholesaleMinQty': p.wholesaleMinQty > 0 ? p.wholesaleMinQty : '',
       'stock': p.stock,
       'lowStockThreshold': p.lowStockThreshold,
       'packQty': p.packQty,
@@ -1400,26 +1602,32 @@ function doPost(e) {
 
     String parseStr(dynamic val) => '${val ?? ''}'.trim();
 
-    final cat = parseStr(row['category']);
+    final cat = InputNormalizer.normalizeDisplayName(parseStr(row['category']));
     final updatedRaw = parseStr(row['updatedAt']);
     return Product(
       id: parseStr(row['id']),
-      name: parseStr(row['name']),
+      name: InputNormalizer.normalizeDisplayName(parseStr(row['name'])),
       category: cat.isEmpty ? 'General' : cat,
-      sku: parseStr(row['sku']),
-      nomenclature: parseStr(row['nomenclature']),
-      printName: parseStr(row['printName']),
-      packQty: parseStr(row['packQty']),
-      boxQty: parseStr(row['boxQty']),
-      packBarcode: parseStr(row['packBarcode']),
-      boxBarcode: parseStr(row['boxBarcode']),
+      sku: InputNormalizer.normalizeBarcode(parseStr(row['sku'])),
+      nomenclature:
+          InputNormalizer.normalizeDisplayName(parseStr(row['nomenclature'])),
+      printName:
+          InputNormalizer.normalizeDisplayName(parseStr(row['printName'])),
+      packQty: InputNormalizer.normalizeDisplayName(parseStr(row['packQty'])),
+      boxQty: InputNormalizer.normalizeDisplayName(parseStr(row['boxQty'])),
+      packBarcode:
+          InputNormalizer.normalizeBarcode(parseStr(row['packBarcode'])),
+      boxBarcode:
+          InputNormalizer.normalizeBarcode(parseStr(row['boxBarcode'])),
       unitWeight: parseStr(row['unitWeight']),
       unit: parseStr(row['unit']),
       costPrice: parseDouble(row['costPrice']).clamp(0.0, double.infinity),
       sellPrice: parseDouble(row['sellPrice']).clamp(0.0, double.infinity),
       wholesalePrice:
           parseDouble(row['wholesalePrice']).clamp(0.0, double.infinity),
-      stock: parseInt(row['stock']).clamp(0, 9999999),
+      wholesaleMinQty:
+          parseInt(row['wholesaleMinQty']).clamp(0, 999999),
+      stock: parseDouble(row['stock']).clamp(0.0, 9999999.0),
       lowStockThreshold: parseInt(row['lowStockThreshold'], fallback: 5).clamp(0, 999999),
       updatedAt: DateTime.tryParse(updatedRaw) ?? fallbackNow,
     );
