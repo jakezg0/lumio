@@ -4061,6 +4061,27 @@ class ShopController extends ChangeNotifier {
       }
     }
 
+    // 2.5 Urgent / Warning: Products with expiring or expired shelf life.
+    final expiring = expiringProducts(withinDays: 30, now: now);
+    for (final prod in expiring.take(5)) {
+      final days = prod.daysUntilExpiry(now: now)!;
+      final exp = prod.expiryDate!;
+      final dateStr =
+          '${exp.day.toString().padLeft(2, '0')}.${exp.month.toString().padLeft(2, '0')}.${exp.year}';
+      advices.add(
+        DailyProductAdvice(
+          id: 'exp_${prod.id}',
+          severity: days <= 7 ? AdviceSeverity.urgent : AdviceSeverity.warning,
+          title: days < 0
+              ? s.adviceExpiredTitle(prod.name)
+              : s.adviceExpiringTitle(prod.name),
+          body: s.adviceExpiringBody(prod.stock, dateStr, days),
+          product: prod,
+          actionType: AdviceActionType.editPrice,
+        ),
+      );
+    }
+
     // 3. Warning: Low or negative margin on active in-stock products.
     final lowMarginProducts = active
         .where(
@@ -4563,6 +4584,7 @@ class ShopController extends ChangeNotifier {
     int wholesaleMinQty = 0,
     required double stock,
     int lowStockThreshold = 5,
+    DateTime? expiryDate,
   }) async {
     final now = DateTime.now();
     final cleanStock = stock < 0 ? 0.0 : stock;
@@ -4587,6 +4609,7 @@ class ShopController extends ChangeNotifier {
       wholesaleMinQty: wholesaleMinQty < 0 ? 0 : wholesaleMinQty,
       stock: cleanStock,
       lowStockThreshold: lowStockThreshold < 0 ? 0 : lowStockThreshold,
+      expiryDate: expiryDate,
       outOfStockSince: cleanStock <= 0 ? now : null,
       updatedAt: now,
     );
@@ -4596,6 +4619,22 @@ class ShopController extends ChangeNotifier {
     notifyListeners();
     await _persist();
     return product;
+  }
+
+  List<Product> expiringProducts({int withinDays = 30, DateTime? now}) {
+    final ref = now ?? DateTime.now();
+    final list = products
+        .where(
+          (p) =>
+              p.stock > 0 && p.isExpiringOrExpired(withinDays: withinDays, now: ref),
+        )
+        .toList()
+      ..sort((a, b) {
+        final da = a.daysUntilExpiry(now: ref) ?? 999999;
+        final db = b.daysUntilExpiry(now: ref) ?? 999999;
+        return da.compareTo(db);
+      });
+    return list;
   }
 
   Future<void> updateProduct(Product updated, {DateTime? at}) async {
@@ -4856,6 +4895,87 @@ class ShopController extends ChangeNotifier {
       notifyListeners();
       await _persist();
     }
+  }
+
+  Future<void> recordStockInDiscrepancy({
+    required String stockInId,
+    required Map<
+            String,
+            ({
+              StockInDiscrepancyType? type,
+              double qty,
+              String note,
+            })>
+        discrepancies,
+    bool deductFromStock = true,
+  }) async {
+    final index = _stockIns.indexWhere((s) => s.id == stockInId);
+    if (index == -1) return;
+    final rec = _stockIns[index];
+    final now = DateTime.now();
+    var changed = false;
+    final nextItems = <StockInItem>[];
+
+    for (final item in rec.items) {
+      final entry = discrepancies[item.productId];
+      if (entry == null) {
+        nextItems.add(item);
+        continue;
+      }
+      final cleanQty = entry.qty < 0 ? 0.0 : entry.qty;
+      final hasNew = entry.type != null && cleanQty > 0.0005;
+      final cleanNote = hasNew ? entry.note.trim() : '';
+
+      final oldQty = item.hasDiscrepancy ? item.discrepancyQty : 0.0;
+      final newQty = hasNew ? cleanQty : 0.0;
+
+      if (deductFromStock) {
+        final delta = newQty - oldQty;
+        if (delta.abs() > 0.0005) {
+          final productIndex =
+              _products.indexWhere((p) => p.id == item.productId);
+          if (productIndex != -1) {
+            final current = _products[productIndex];
+            final nextStock = current.stock - delta;
+            final next = _applyStockOutTracking(
+              current,
+              current.copyWith(
+                stock: nextStock < 0 ? 0.0 : nextStock,
+                updatedAt: now,
+              ),
+              now,
+            );
+            _products[productIndex] = next;
+            _recordProductChange(current, next, 'stock_in_discrepancy');
+          }
+        }
+      }
+
+      if (hasNew) {
+        if (item.discrepancyType != entry.type ||
+            (item.discrepancyQty - cleanQty).abs() > 0.0005 ||
+            item.discrepancyNote != cleanNote) {
+          changed = true;
+        }
+        nextItems.add(
+          item.copyWith(
+            discrepancyType: entry.type,
+            discrepancyQty: cleanQty,
+            discrepancyNote: cleanNote,
+          ),
+        );
+      } else {
+        if (item.hasDiscrepancy) {
+          changed = true;
+        }
+        nextItems.add(item.copyWith(clearDiscrepancy: true));
+      }
+    }
+
+    if (!changed) return;
+    _stockIns[index] = rec.copyWith(items: nextItems);
+    notifyListeners();
+    await _persist();
   }
 
   Future<void> repeatStockIn(StockInRecord record) async {

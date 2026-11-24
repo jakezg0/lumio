@@ -3105,6 +3105,161 @@ void main() {
       expect(reloaded.stockIns.first.remainingDebt, 0);
     },
   );
+
+  test(
+    'stock-in discrepancy (shortage/defect/mismatch) serializes, deducts stock via recordStockInDiscrepancy, persists across restarts, and formats WhatsApp claim',
+    () async {
+      final dbFile = File('${tempDir.path}/discrepancy_shop_data.json');
+      final storage1 = JsonFileInventoryStorage(filePath: dbFile.path);
+      final ctrl = ShopController(storage: storage1);
+      await ctrl.initialize();
+
+      final p = await ctrl.addProduct(
+        name: 'Керамогранит 60x60',
+        category: 'Плитка',
+        costPrice: 1500,
+        sellPrice: 2400,
+        stock: 0,
+      );
+
+      // Receive 20 units into stock without noticing shortage
+      await ctrl.receiveStock(
+        supplierName: 'Керамика Опт',
+        items: [
+          StockInItem(
+            productId: p.id,
+            productName: p.name,
+            quantity: 20,
+            unitCost: 1500,
+          ),
+        ],
+      );
+      expect(ctrl.findProductById(p.id)!.stock, 20);
+      final stockInId = ctrl.stockIns.first.id;
+
+      // Post-factum record 2 units broken/defect with stock deduction
+      await ctrl.recordStockInDiscrepancy(
+        stockInId: stockInId,
+        discrepancies: {
+          p.id: (
+            type: StockInDiscrepancyType.defect,
+            qty: 2,
+            note: 'Бой в нижней коробке',
+          ),
+        },
+        deductFromStock: true,
+      );
+
+      expect(ctrl.findProductById(p.id)!.stock, 18);
+      expect(ctrl.stockIns.first.hasDiscrepancy, isTrue);
+      expect(ctrl.stockIns.first.totalDiscrepancyUnits, 2);
+      expect(ctrl.stockIns.first.totalDiscrepancyCost, 3000);
+      expect(
+        ctrl.productChanges.first.source,
+        'stock_in_discrepancy',
+      );
+
+      // Reload from disk and verify persistence
+      final reloaded = ShopController(
+        storage: JsonFileInventoryStorage(filePath: dbFile.path),
+      );
+      await reloaded.initialize();
+      expect(reloaded.findProductById(p.id)!.stock, 18);
+      final inv = reloaded.stockIns.first;
+      expect(inv.hasDiscrepancy, isTrue);
+      expect(inv.items.first.discrepancyType, StockInDiscrepancyType.defect);
+      expect(inv.items.first.discrepancyQty, 2);
+      expect(inv.items.first.discrepancyNote, 'Бой в нижней коробке');
+
+      // Verify formatted WhatsApp claim text
+      final claimText = ExportService.buildSupplierClaimText(
+        inv,
+        AppStrings(AppLanguage.ru),
+        AppCurrency.kzt,
+        shopName: 'Тастак Склад',
+        shopPhone: '+77011234567',
+      );
+      expect(claimText, contains('Претензия по приходу'));
+      expect(claimText, contains('Керамика Опт'));
+      expect(claimText, contains('Керамогранит 60x60'));
+      expect(claimText, contains('Брак / Бой'));
+      expect(claimText, contains('Бой в нижней коробке'));
+    },
+  );
+
+  test(
+    'Product.expiryDate persists across restarts, flags expired and expiring-soon items, and generates daily advice',
+    () async {
+      final dbFile = File('${tempDir.path}/expiry_shop_data.json');
+      final storage1 = JsonFileInventoryStorage(filePath: dbFile.path);
+      final ctrl = ShopController(storage: storage1);
+      await ctrl.initialize();
+
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+
+      final expiredProd = await ctrl.addProduct(
+        name: 'Клей ПВА 1кг',
+        category: 'Химия',
+        costPrice: 500,
+        sellPrice: 800,
+        stock: 4,
+        expiryDate: today.subtract(const Duration(days: 3)),
+      );
+      final soonProd = await ctrl.addProduct(
+        name: 'Герметик силиконовый',
+        category: 'Химия',
+        costPrice: 700,
+        sellPrice: 1200,
+        stock: 6,
+        expiryDate: today.add(const Duration(days: 10)),
+      );
+      final okProd = await ctrl.addProduct(
+        name: 'Батарейки АА',
+        category: 'Расходники',
+        costPrice: 200,
+        sellPrice: 400,
+        stock: 20,
+        expiryDate: today.add(const Duration(days: 180)),
+      );
+      final zeroStockExpiring = await ctrl.addProduct(
+        name: 'Пена монтажная',
+        category: 'Химия',
+        costPrice: 900,
+        sellPrice: 1500,
+        stock: 0,
+        expiryDate: today.add(const Duration(days: 5)),
+      );
+
+      expect(expiredProd.isExpired(now: today), isTrue);
+      expect(expiredProd.daysUntilExpiry(now: today), -3);
+      expect(soonProd.isExpiringSoon(withinDays: 30, now: today), isTrue);
+      expect(soonProd.daysUntilExpiry(now: today), 10);
+      expect(okProd.isExpiringOrExpired(withinDays: 30, now: today), isFalse);
+      expect(zeroStockExpiring.isExpiringSoon(withinDays: 30, now: today), isTrue);
+
+      // Reload from disk and verify expiryDate persistence
+      final reloaded = ShopController(
+        storage: JsonFileInventoryStorage(filePath: dbFile.path),
+      );
+      await reloaded.initialize();
+
+      final expiringList = reloaded.expiringProducts(withinDays: 30, now: today);
+      expect(
+        expiringList.map((p) => p.id).toList(),
+        [expiredProd.id, soonProd.id],
+      );
+      expect(reloaded.findProductById(okProd.id)!.expiryDate, okProd.expiryDate);
+
+      // Daily advice includes expiring/expired items with editPrice action
+      final advices = reloaded.dailyProductAdvices();
+      final expAdvices = advices.where((a) => a.id.startsWith('exp_')).toList();
+      expect(expAdvices.length, 2);
+      expect(expAdvices.first.severity, AdviceSeverity.urgent);
+      expect(expAdvices.first.actionType, AdviceActionType.editPrice);
+      expect(expAdvices.last.severity, AdviceSeverity.warning);
+    },
+  );
 }
 
 class _LazyStartupStorage extends InMemoryInventoryStorage {

@@ -56,6 +56,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
   late final TextEditingController _thresholdController;
   late List<String> _extraBarcodes;
   late String _imagePath;
+  DateTime? _expiryDate;
   bool _pickingImage = false;
 
   @override
@@ -64,6 +65,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
     final item = widget.existing;
     _extraBarcodes = List<String>.from(item?.extraBarcodes ?? const []);
     _imagePath = item?.imagePath ?? '';
+    _expiryDate = item?.expiryDate;
     final tpl = item == null ? widget.template : null;
     _nameController = TextEditingController(
       text: item?.name ?? tpl?.name ?? widget.initialName ?? '',
@@ -343,6 +345,7 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
         wholesaleMinQty: wholesaleMinQty,
         stock: stock,
         lowStockThreshold: threshold,
+        expiryDate: _expiryDate,
       );
     } else {
       resultProduct = existing.copyWith(
@@ -368,6 +371,8 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
         wholesaleMinQty: wholesaleMinQty < 0 ? 0 : wholesaleMinQty,
         stock: stock,
         lowStockThreshold: threshold,
+        expiryDate: _expiryDate,
+        clearExpiryDate: _expiryDate == null,
         extraBarcodes: _extraBarcodes,
       );
       await widget.controller.updateProduct(resultProduct);
@@ -750,6 +755,42 @@ class _ProductFormSheetState extends State<ProductFormSheet> {
                     ),
                     validator: (v) =>
                         _validateNonNegativeInt(v, 'threshold'),
+                  ),
+                  const SizedBox(height: 10),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    onTap: () async {
+                      final now = DateTime.now();
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _expiryDate ?? now.add(const Duration(days: 30)),
+                        firstDate: DateTime(now.year - 2),
+                        lastDate: DateTime(now.year + 10),
+                      );
+                      if (picked != null && mounted) {
+                        setState(() => _expiryDate = picked);
+                      }
+                    },
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: strings.expiryDateOptionalLabel,
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.event_outlined),
+                        suffixIcon: _expiryDate != null
+                            ? IconButton(
+                                tooltip: strings.clearExpiryAction,
+                                onPressed: () =>
+                                    setState(() => _expiryDate = null),
+                                icon: const Icon(Icons.clear),
+                              )
+                            : null,
+                      ),
+                      child: Text(
+                        _expiryDate != null
+                            ? '${_expiryDate!.day.toString().padLeft(2, '0')}.${_expiryDate!.month.toString().padLeft(2, '0')}.${_expiryDate!.year}'
+                            : '—',
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 10),
                   Row(

@@ -30,7 +30,7 @@ import '../widgets/suppliers_sheet.dart';
 import '../widgets/voice_search_button.dart';
 import 'barcode_scanner_screen.dart';
 
-enum _StockFilter { all, inStock, inMinus, lowStock, outOfStock }
+enum _StockFilter { all, inStock, inMinus, lowStock, outOfStock, expiring }
 
 enum _ProductSort {
   newest,
@@ -169,6 +169,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
           if (!product.isLowStock && !product.isOutOfStock) return false;
         case _StockFilter.outOfStock:
           if (product.stock > 0) return false;
+        case _StockFilter.expiring:
+          if (product.stock <= 0 ||
+              !product.isExpiringOrExpired(withinDays: 30)) {
+            return false;
+          }
       }
       if (query.isEmpty) return true;
       return InputNormalizer.matchesProductSearch(product, _searchQuery);
@@ -176,6 +181,13 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
     switch (_sortBy) {
       case _ProductSort.newest:
+        if (_stockFilter == _StockFilter.expiring) {
+          list.sort((a, b) {
+            final da = a.daysUntilExpiry() ?? 999999;
+            final db = b.daysUntilExpiry() ?? 999999;
+            return da.compareTo(db);
+          });
+        }
         break;
       case _ProductSort.priceDesc:
         list.sort((a, b) => b.sellPrice.compareTo(a.sellPrice));
@@ -1021,9 +1033,13 @@ class _InventoryScreenState extends State<InventoryScreen> {
         var inMinusCount = 0;
         var outOfStockCount = 0;
         var groupLowStockCount = 0;
+        var expiringCount = 0;
         for (final p in groupProducts) {
           if (p.stock > 0) {
             inStockCount += 1;
+            if (p.isExpiringOrExpired(withinDays: 30)) {
+              expiringCount += 1;
+            }
           } else {
             outOfStockCount += 1;
             if (p.stock < 0) {
@@ -1723,6 +1739,25 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         ),
                       ),
                     ),
+                    if (expiringCount > 0 ||
+                        _stockFilter == _StockFilter.expiring)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: FilterChip(
+                          avatar: Icon(
+                            Icons.event_busy_outlined,
+                            size: 16,
+                            color: Colors.deepOrange.shade700,
+                          ),
+                          label: Text(strings.expiringFilter(expiringCount)),
+                          selected: _stockFilter == _StockFilter.expiring,
+                          onSelected: (selected) => setState(
+                            () => _stockFilter = selected
+                                ? _StockFilter.expiring
+                                : _StockFilter.all,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -2345,6 +2380,38 @@ class _ProductCard extends StatelessWidget {
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
+                      if (product.expiryDate != null)
+                        Builder(builder: (context) {
+                          final exp = product.expiryDate!;
+                          final days = product.daysUntilExpiry()!;
+                          final dateStr =
+                              '${exp.day.toString().padLeft(2, '0')}.${exp.month.toString().padLeft(2, '0')}.${exp.year}';
+                          final isExpired = days < 0;
+                          final isUrgent = days <= 30;
+                          final label = isExpired
+                              ? '${strings.expiredBadge} ($dateStr) • ${strings.sellFirstHint}'
+                              : (days == 0
+                                  ? '${strings.expiresTodayBadge} ($dateStr) • ${strings.sellFirstHint}'
+                                  : (isUrgent
+                                      ? '${strings.expiresInDaysBadge(days, dateStr)} • ${strings.sellFirstHint}'
+                                      : strings.expiryDateShortBadge(dateStr)));
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(
+                              label,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: isExpired
+                                    ? theme.colorScheme.error
+                                    : (isUrgent
+                                        ? Colors.deepOrange.shade700
+                                        : theme.colorScheme.onSurfaceVariant),
+                                fontWeight: isUrgent
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                              ),
+                            ),
+                          );
+                        }),
                     ],
                   ),
                 ),

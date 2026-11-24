@@ -1049,6 +1049,41 @@ class _PosScreenState extends State<PosScreen> {
                                         '  •  ${strings.stockCountLabel(product.stock)}'
                                         '${inCart > 0 ? '  •  ${strings.inCartLabel(inCart)}' : ''}',
                                       ),
+                                      if (product.stock > 0 &&
+                                          product.isExpiringOrExpired(
+                                            withinDays: 30,
+                                          ))
+                                        Builder(builder: (context) {
+                                          final exp = product.expiryDate!;
+                                          final days =
+                                              product.daysUntilExpiry()!;
+                                          final dateStr =
+                                              '${exp.day.toString().padLeft(2, '0')}.${exp.month.toString().padLeft(2, '0')}';
+                                          final label = days < 0
+                                              ? '${strings.expiredBadge} ($dateStr)'
+                                              : (days == 0
+                                                  ? strings.expiresTodayBadge
+                                                  : strings.expiresInDaysBadge(
+                                                      days,
+                                                      dateStr,
+                                                    ));
+                                          return Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 2),
+                                            child: Text(
+                                              '⚠ $label — ${strings.sellFirstHint}',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w700,
+                                                color: days <= 0
+                                                    ? Theme.of(context)
+                                                        .colorScheme
+                                                        .error
+                                                    : Colors.deepOrange.shade700,
+                                              ),
+                                            ),
+                                          );
+                                        }),
                                       if (remainingForWholesale > 0)
                                         Padding(
                                           padding:

@@ -6,6 +6,7 @@ import '../models/product.dart';
 import '../models/stock_in.dart';
 import '../screens/barcode_scanner_screen.dart';
 import '../services/export_service.dart';
+import '../services/whatsapp_launcher.dart';
 import '../state/shop_controller.dart';
 import 'attach_barcode_sheet.dart';
 import 'currency_calculator_dialog.dart';
@@ -82,15 +83,20 @@ class _StockInSheetState extends State<StockInSheet> {
   static const _rateCurrencies = ['USD', 'CNY', 'RUB', 'EUR', 'KZT'];
 
   final _supplierController = TextEditingController();
+  final _supplierPhoneController = TextEditingController();
   final _rateController = TextEditingController();
   final _paidNowController = TextEditingController();
   final _searchController = TextEditingController();
   final Map<String, double> _quantities = {};
   final Map<String, double> _unitCosts = {};
   final Map<String, double> _sellPrices = {};
+  final Map<String, StockInDiscrepancyType?> _discrepancyTypes = {};
+  final Map<String, double> _discrepancyQtys = {};
   final Map<String, TextEditingController> _costControllers = {};
   final Map<String, TextEditingController> _sellControllers = {};
   final Map<String, TextEditingController> _qtyControllers = {};
+  final Map<String, TextEditingController> _discQtyControllers = {};
+  final Map<String, TextEditingController> _discNoteControllers = {};
   String _searchQuery = '';
   String _rateCurrency = 'USD';
   bool _recordAsExpense = true;
@@ -116,12 +122,20 @@ class _StockInSheetState extends State<StockInSheet> {
     return (parsed != null && parsed > 0) ? parsed : 0.0;
   }
 
+  bool get _hasAnyDiscrepancy => widget.controller.products.any(
+        (p) =>
+            (_quantities[p.id] ?? 0) > 0 &&
+            _discrepancyTypes[p.id] != null &&
+            (_discrepancyQtys[p.id] ?? 0) > 0.0005,
+      );
+
   @override
   void initState() {
     super.initState();
     final draft = widget.controller.stockInDraft;
     if (draft != null) {
       _supplierController.text = draft.supplierName;
+      _supplierPhoneController.text = draft.supplierPhone;
       if (draft.currencyCode.isNotEmpty &&
           _rateCurrencies.contains(draft.currencyCode.toUpperCase())) {
         _rateCurrency = draft.currencyCode.toUpperCase();
@@ -145,11 +159,18 @@ class _StockInSheetState extends State<StockInSheet> {
       final draftQty = draft?.quantities[p.id] ?? 0;
       final draftCost = draft?.unitCosts[p.id] ?? p.costPrice;
       final draftSell = draft?.sellPrices[p.id] ?? p.sellPrice;
+      final draftDiscType = draft?.discrepancyTypes[p.id];
+      final draftDiscQty = draft?.discrepancyQtys[p.id] ?? 0;
+      final draftDiscNote = draft?.discrepancyNotes[p.id] ?? '';
       if (draftQty > 0) {
         _quantities[p.id] = draftQty;
       }
       _unitCosts[p.id] = draftCost;
       _sellPrices[p.id] = draftSell;
+      if (draftDiscType != null && draftDiscQty > 0) {
+        _discrepancyTypes[p.id] = draftDiscType;
+        _discrepancyQtys[p.id] = draftDiscQty;
+      }
       _costControllers[p.id] = TextEditingController(
         text: draftCost > 0
             ? draftCost.toStringAsFixed(
@@ -165,12 +186,17 @@ class _StockInSheetState extends State<StockInSheet> {
             : '',
       );
       _qtyControllers[p.id] = TextEditingController(text: '$draftQty');
+      _discQtyControllers[p.id] = TextEditingController(
+        text: draftDiscQty > 0 ? formatQty(draftDiscQty) : '',
+      );
+      _discNoteControllers[p.id] = TextEditingController(text: draftDiscNote);
     }
   }
 
   @override
   void dispose() {
     _supplierController.dispose();
+    _supplierPhoneController.dispose();
     _rateController.dispose();
     _paidNowController.dispose();
     _searchController.dispose();
@@ -183,6 +209,12 @@ class _StockInSheetState extends State<StockInSheet> {
     for (final c in _qtyControllers.values) {
       c.dispose();
     }
+    for (final c in _discQtyControllers.values) {
+      c.dispose();
+    }
+    for (final c in _discNoteControllers.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -190,6 +222,9 @@ class _StockInSheetState extends State<StockInSheet> {
     final activeQty = <String, double>{};
     final activeCosts = <String, double>{};
     final activeSells = <String, double>{};
+    final activeDiscTypes = <String, StockInDiscrepancyType>{};
+    final activeDiscQtys = <String, double>{};
+    final activeDiscNotes = <String, String>{};
     for (final entry in _quantities.entries) {
       if (entry.value > 0) {
         activeQty[entry.key] = entry.value;
@@ -201,11 +236,22 @@ class _StockInSheetState extends State<StockInSheet> {
         if (sell != null) {
           activeSells[entry.key] = sell;
         }
+        final dType = _discrepancyTypes[entry.key];
+        final dQty = _discrepancyQtys[entry.key] ?? 0;
+        if (dType != null && dQty > 0.0005) {
+          activeDiscTypes[entry.key] = dType;
+          activeDiscQtys[entry.key] = dQty;
+          final note = (_discNoteControllers[entry.key]?.text ?? '').trim();
+          if (note.isNotEmpty) {
+            activeDiscNotes[entry.key] = note;
+          }
+        }
       }
     }
     widget.controller.saveStockInDraft(
       StockInDraft(
         supplierName: _supplierController.text,
+        supplierPhone: _supplierPhoneController.text,
         currencyCode: _parsedExchangeRate != null ? _rateCurrency : '',
         exchangeRate: _parsedExchangeRate,
         recordAsExpense: _recordAsExpense,
@@ -214,12 +260,16 @@ class _StockInSheetState extends State<StockInSheet> {
         quantities: activeQty,
         unitCosts: activeCosts,
         sellPrices: activeSells,
+        discrepancyTypes: activeDiscTypes,
+        discrepancyQtys: activeDiscQtys,
+        discrepancyNotes: activeDiscNotes,
       ),
     );
   }
 
   Future<void> _clearDraft() async {
     _supplierController.clear();
+    _supplierPhoneController.clear();
     _rateController.clear();
     _paidNowController.clear();
     _searchController.clear();
@@ -229,6 +279,8 @@ class _StockInSheetState extends State<StockInSheet> {
       _recordAsExpense = true;
       _isCredit = false;
       _quantities.clear();
+      _discrepancyTypes.clear();
+      _discrepancyQtys.clear();
       _lastScannedId = null;
       _scanFeedback = null;
       _scanError = false;
@@ -241,6 +293,8 @@ class _StockInSheetState extends State<StockInSheet> {
         _sellControllers[p.id]?.text =
             p.sellPrice > 0 ? p.sellPrice.toStringAsFixed(0) : '';
         _qtyControllers[p.id]?.text = '0';
+        _discQtyControllers[p.id]?.clear();
+        _discNoteControllers[p.id]?.clear();
       }
     });
     await widget.controller.clearStockInDraft();
@@ -508,12 +562,19 @@ class _StockInSheetState extends State<StockInSheet> {
     for (final p in widget.controller.products) {
       final qty = _quantities[p.id] ?? 0;
       if (qty > 0) {
+        final dType = _discrepancyTypes[p.id];
+        final dQty = _discrepancyQtys[p.id] ?? 0;
+        final dNote = (_discNoteControllers[p.id]?.text ?? '').trim();
+        final hasDisc = dType != null && dQty > 0.0005;
         items.add(
           StockInItem(
             productId: p.id,
             productName: p.name,
             quantity: qty,
             unitCost: _unitCosts[p.id] ?? p.costPrice,
+            discrepancyType: hasDisc ? dType : null,
+            discrepancyQty: hasDisc ? dQty : 0,
+            discrepancyNote: hasDisc ? dNote : '',
           ),
         );
       }
@@ -542,6 +603,24 @@ class _StockInSheetState extends State<StockInSheet> {
     await Share.share(text, subject: strings.stockInInvoiceTitle);
   }
 
+  Future<void> _shareSupplierClaimWhatsApp() async {
+    final record = _buildPreviewRecord();
+    if (!record.hasDiscrepancy) return;
+    final strings = widget.controller.strings;
+    final text = ExportService.buildSupplierClaimText(
+      record,
+      strings,
+      widget.controller.currency,
+      shopName: widget.controller.shopName,
+      shopPhone: widget.controller.shopPhone,
+    );
+    await WhatsAppLauncher.openChatOrShare(
+      phone: _supplierPhoneController.text,
+      message: text,
+      subject: strings.supplierClaimTitle,
+    );
+  }
+
   Future<void> _shareInvoicePdf() async {
     final record = _buildPreviewRecord();
     if (record.items.isEmpty) return;
@@ -561,6 +640,10 @@ class _StockInSheetState extends State<StockInSheet> {
       final qty = _quantities[p.id] ?? 0;
       if (qty > 0) {
         final nextSell = _sellPrices[p.id];
+        final dType = _discrepancyTypes[p.id];
+        final dQty = _discrepancyQtys[p.id] ?? 0;
+        final dNote = (_discNoteControllers[p.id]?.text ?? '').trim();
+        final hasDisc = dType != null && dQty > 0.0005;
         items.add(
           StockInItem(
             productId: p.id,
@@ -572,6 +655,9 @@ class _StockInSheetState extends State<StockInSheet> {
                     (nextSell - p.sellPrice).abs() > 0.009)
                 ? nextSell
                 : null,
+            discrepancyType: hasDisc ? dType : null,
+            discrepancyQty: hasDisc ? dQty : 0,
+            discrepancyNote: hasDisc ? dNote : '',
           ),
         );
       }
@@ -730,6 +816,18 @@ class _StockInSheetState extends State<StockInSheet> {
                           },
                           decoration: InputDecoration(
                             labelText: strings.supplierNameHint,
+                            border: const OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _supplierPhoneController,
+                          keyboardType: TextInputType.phone,
+                          onChanged: (_) => _persistDraft(),
+                          decoration: InputDecoration(
+                            labelText: strings.supplierPhoneOptionalHint,
+                            prefixIcon: const Icon(Icons.phone_outlined, size: 18),
                             border: const OutlineInputBorder(),
                             isDense: true,
                           ),
@@ -1287,6 +1385,168 @@ class _StockInSheetState extends State<StockInSheet> {
                             );
                           },
                         ),
+                      if (qty > 0)
+                        Builder(
+                          builder: (context) {
+                            final discType = _discrepancyTypes[p.id];
+                            final discQtyCtrl = _discQtyControllers[p.id]!;
+                            final discNoteCtrl = _discNoteControllers[p.id]!;
+                            final colorScheme = Theme.of(context).colorScheme;
+                            if (discType == null) {
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: TextButton.icon(
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 4,
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      setState(() {
+                                        _discrepancyTypes[p.id] =
+                                            StockInDiscrepancyType.shortage;
+                                        if ((_discrepancyQtys[p.id] ?? 0) <= 0) {
+                                          _discrepancyQtys[p.id] = 1;
+                                          discQtyCtrl.text = '1';
+                                        }
+                                      });
+                                      _persistDraft();
+                                    },
+                                    icon: const Icon(
+                                      Icons.report_problem_outlined,
+                                      size: 16,
+                                    ),
+                                    label: Text(strings.discrepancyBtnLabel),
+                                  ),
+                                ),
+                              );
+                            }
+                            return Container(
+                              margin: const EdgeInsets.only(top: 6),
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: colorScheme.errorContainer
+                                    .withValues(alpha: 0.45),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.report_problem_outlined,
+                                        size: 16,
+                                        color: colorScheme.error,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          strings.discrepancyBtnLabel,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            color: colorScheme.error,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                      IconButton(
+                                        visualDensity: VisualDensity.compact,
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        icon: const Icon(Icons.close, size: 18),
+                                        onPressed: () {
+                                          setState(() {
+                                            _discrepancyTypes.remove(p.id);
+                                            _discrepancyQtys.remove(p.id);
+                                            discQtyCtrl.clear();
+                                            discNoteCtrl.clear();
+                                          });
+                                          _persistDraft();
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 4,
+                                    children: [
+                                      for (final t
+                                          in StockInDiscrepancyType.values)
+                                        ChoiceChip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: Text(
+                                            strings.discrepancyTypeLabel(
+                                              t.name,
+                                            ),
+                                          ),
+                                          selected: discType == t,
+                                          onSelected: (_) {
+                                            setState(() {
+                                              _discrepancyTypes[p.id] = t;
+                                            });
+                                            _persistDraft();
+                                          },
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 120,
+                                        child: TextField(
+                                          controller: discQtyCtrl,
+                                          keyboardType:
+                                              const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                          onTap: () => selectAllText(
+                                            discQtyCtrl,
+                                          ),
+                                          onChanged: (v) {
+                                            final parsed = parseQty(v);
+                                            setState(() {
+                                              _discrepancyQtys[p.id] =
+                                                  (parsed == null || parsed < 0)
+                                                      ? 0
+                                                      : parsed;
+                                            });
+                                            _persistDraft();
+                                          },
+                                          decoration: InputDecoration(
+                                            labelText:
+                                                strings.discrepancyQtyLabel,
+                                            border: const OutlineInputBorder(),
+                                            isDense: true,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: TextField(
+                                          controller: discNoteCtrl,
+                                          onChanged: (_) => _persistDraft(),
+                                          decoration: InputDecoration(
+                                            labelText:
+                                                strings.discrepancyNoteHint,
+                                            border: const OutlineInputBorder(),
+                                            isDense: true,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
                     ],
                   ),
                 );
@@ -1365,6 +1625,18 @@ class _StockInSheetState extends State<StockInSheet> {
                 ),
               ],
             ),
+            if (_hasAnyDiscrepancy) ...[
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.errorContainer,
+                  foregroundColor: Theme.of(context).colorScheme.onErrorContainer,
+                ),
+                onPressed: _shareSupplierClaimWhatsApp,
+                icon: const Icon(Icons.report_problem_outlined, size: 18),
+                label: Text(strings.sendClaimWhatsAppBtn),
+              ),
+            ],
           ],
           ],
         ),

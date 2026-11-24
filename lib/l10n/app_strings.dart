@@ -1147,6 +1147,8 @@ class AppStrings {
         return _pick('New Item', 'Новый товар', 'Жаңа тауар');
       case 'stock_in':
         return _pick('Stock-In', 'Приход', 'Кіріс');
+      case 'stock_in_discrepancy':
+        return _pick('Shortage / Defect', 'Недовоз / Брак', 'Жетіспеушілік / Ақау');
       case 'stock_in_delete':
         return _pick('Stock-In Deleted', 'Отмена прихода', 'Кірісті жою');
       case 'stocktake':
@@ -3545,4 +3547,135 @@ class AppStrings {
         'Без поставщика',
         'Жеткізуші көрсетілмеген',
       );
+  String get discrepancyBtnLabel => _pick(
+        'Shortage / Defect',
+        'Недовоз / Брак',
+        'Жетіспеушілік / Ақау',
+      );
+  String discrepancyTypeLabel(String type) {
+    switch (type) {
+      case 'defect':
+        return _pick('Defect / Damage', 'Брак / Бой', 'Ақау / Сынық');
+      case 'mismatch':
+        return _pick('Mismatch', 'Пересорт', 'Басқа сұрып');
+      default:
+        return _pick('Shortage', 'Недовоз', 'Жетіспеушілік');
+    }
+  }
+  String get discrepancyQtyLabel => _pick(
+        'Discrepancy qty',
+        'Кол-во расхождения',
+        'Айырмашылық саны',
+      );
+  String get discrepancyNoteHint => _pick(
+        'Comment (e.g. broken, wrong color)',
+        'Комментарий (напр. бой, другой цвет)',
+        'Түсініктеме (мысалы: сынық, басқа түс)',
+      );
+  String get deductDiscrepancyFromStockLabel => _pick(
+        'Deduct discrepancy from stock',
+        'Списать расхождение со склада',
+        'Айырмашылықты қоймадан шегеру',
+      );
+  String get sendClaimWhatsAppBtn => _pick(
+        'Send claim (WhatsApp)',
+        'Претензия в WhatsApp',
+        'WhatsApp-қа шағым',
+      );
+  String get supplierClaimTitle => _pick(
+        'Supplier Claim (Shortage / Defect)',
+        'Претензия по приходу (Недовоз / Брак)',
+        'Кіріс бойынша шағым (Жетіспеушілік / Ақау)',
+      );
+  String get supplierClaimTotalLabel => _pick(
+        'Claim total',
+        'Сумма претензии',
+        'Шағым сомасы',
+      );
+  String get supplierClaimClosingNote => _pick(
+        'Please deliver the missing items, replace defective ones, or adjust the balance.',
+        'Просим довезти товар, заменить брак или учесть сумму в расчёте.',
+        'Жетіспейтін тауарды жеткізуді, ақауды ауыстыруды немесе есептеуде ескеруді сұраймыз.',
+      );
+  String get discrepancySavedMsg => _pick(
+        'Discrepancy recorded',
+        'Расхождение зафиксировано',
+        'Айырмашылық тіркелді',
+      );
+  String discrepancyBadge(String summary) => _pick(
+        'Claim: $summary',
+        'Претензия: $summary',
+        'Шағым: $summary',
+      );
+  String get expiryDateOptionalLabel => _pick(
+        'Expiry date (optional)',
+        'Срок годности (необязательно)',
+        'Жарамдылық мерзімі (міндетті емес)',
+      );
+  String get clearExpiryAction => _pick(
+        'Clear',
+        'Сбросить',
+        'Тазалау',
+      );
+  String expiringFilter(int count) => _pick(
+        'Expiring ($count)',
+        'Срок годности ($count)',
+        'Мерзімі ($count)',
+      );
+  String get expiredBadge => _pick(
+        'Expired',
+        'Просрочен',
+        'Мерзімі өткен',
+      );
+  String get expiresTodayBadge => _pick(
+        'Expires today',
+        'Истекает сегодня',
+        'Бүгін бітеді',
+      );
+  String expiresInDaysBadge(int days, String date) => _pick(
+        'Exp. $date (${days}d)',
+        'Годен до $date ($days дн.)',
+        '$date дейін ($days күн)',
+      );
+  String expiryDateShortBadge(String date) => _pick(
+        'Exp. $date',
+        'До $date',
+        '$date дейін',
+      );
+  String get sellFirstHint => _pick(
+        'Sell first / markdown',
+        'Продать первым / уценить',
+        'Бірінші сату / арзандату',
+      );
+  String adviceExpiringTitle(String name) => _pick(
+        'Expiring soon: $name',
+        'Истекает срок: $name',
+        'Мерзімі жақын: $name',
+      );
+  String adviceExpiredTitle(String name) => _pick(
+        'Expired: $name',
+        'Истёк срок годности: $name',
+        'Мерзімі өтті: $name',
+      );
+  String adviceExpiringBody(num stock, String date, int days) {
+    if (days < 0) {
+      return _pick(
+        '${_q(stock)} in stock expired on $date. Check condition, markdown, or write off.',
+        'На складе ${_q(stock)} шт. со сроком до $date (просрочен ${-days} дн.). Проверьте, уцените или спишите.',
+        'Қоймада ${_q(stock)} дана, мерзімі $date (${-days} күн өткен). Тексеріңіз, арзандатыңыз немесе есептен шығарыңыз.',
+      );
+    }
+    if (days == 0) {
+      return _pick(
+        '${_q(stock)} in stock expires today ($date). Sell first or apply a discount.',
+        'На складе ${_q(stock)} шт. со сроком до $date (истекает сегодня). Продайте первым или сделайте скидку.',
+        'Қоймада ${_q(stock)} дана, мерзімі бүгін ($date) бітеді. Бірінші сатыңыз немесе жеңілдік жасаңыз.',
+      );
+    }
+    return _pick(
+      '${_q(stock)} in stock expires on $date ($days d left). Sell first or discount to clear stock.',
+      'На складе ${_q(stock)} шт. (годен до $date, осталось $days дн.). Продайте первым или уцените.',
+      'Қоймада ${_q(stock)} дана ($date дейін, $days күн қалды). Бірінші сатыңыз немесе арзандатыңыз.',
+    );
+  }
 }

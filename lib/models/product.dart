@@ -20,6 +20,7 @@ class Product {
     this.wholesaleMinQty = 0,
     required this.stock,
     this.lowStockThreshold = 5,
+    this.expiryDate,
     this.outOfStockSince,
     this.totalOutOfStockDays = 0,
     this.archivedAt,
@@ -47,6 +48,7 @@ class Product {
   final int wholesaleMinQty;
   final double stock;
   final int lowStockThreshold;
+  final DateTime? expiryDate;
   final DateTime? outOfStockSince;
   final int totalOutOfStockDays;
   final DateTime? archivedAt;
@@ -81,6 +83,32 @@ class Product {
 
   bool get isLowStock => stock > 0 && stock <= lowStockThreshold;
 
+  bool get hasExpiryDate => expiryDate != null;
+
+  int? daysUntilExpiry({DateTime? now}) {
+    final exp = expiryDate;
+    if (exp == null) return null;
+    final n = now ?? DateTime.now();
+    final today = DateTime(n.year, n.month, n.day);
+    final target = DateTime(exp.year, exp.month, exp.day);
+    return target.difference(today).inDays;
+  }
+
+  bool isExpired({DateTime? now}) {
+    final days = daysUntilExpiry(now: now);
+    return days != null && days < 0;
+  }
+
+  bool isExpiringSoon({int withinDays = 30, DateTime? now}) {
+    final days = daysUntilExpiry(now: now);
+    return days != null && days >= 0 && days <= withinDays;
+  }
+
+  bool isExpiringOrExpired({int withinDays = 30, DateTime? now}) {
+    final days = daysUntilExpiry(now: now);
+    return days != null && days <= withinDays;
+  }
+
   int get currentOutOfStockDays {
     if (stock > 0) return 0;
     final since = outOfStockSince ?? updatedAt;
@@ -112,6 +140,8 @@ class Product {
     int? wholesaleMinQty,
     double? stock,
     int? lowStockThreshold,
+    DateTime? expiryDate,
+    bool clearExpiryDate = false,
     DateTime? outOfStockSince,
     bool clearOutOfStockSince = false,
     int? totalOutOfStockDays,
@@ -142,6 +172,7 @@ class Product {
       wholesaleMinQty: wholesaleMinQty ?? this.wholesaleMinQty,
       stock: stock ?? this.stock,
       lowStockThreshold: lowStockThreshold ?? this.lowStockThreshold,
+      expiryDate: clearExpiryDate ? null : (expiryDate ?? this.expiryDate),
       outOfStockSince: clearOutOfStockSince
           ? null
           : (outOfStockSince ?? this.outOfStockSince),
@@ -174,6 +205,8 @@ class Product {
       if (wholesaleMinQty > 0) 'wholesaleMinQty': wholesaleMinQty,
       'stock': stock,
       'lowStockThreshold': lowStockThreshold,
+      if (expiryDate != null)
+        'expiryDate': expiryDate!.toIso8601String(),
       if (outOfStockSince != null)
         'outOfStockSince': outOfStockSince!.toIso8601String(),
       if (totalOutOfStockDays > 0) 'totalOutOfStockDays': totalOutOfStockDays,
@@ -184,6 +217,7 @@ class Product {
   }
 
   factory Product.fromJson(Map<String, dynamic> json) {
+    final expiryRaw = json['expiryDate'] as String?;
     final outOfStockRaw = json['outOfStockSince'] as String?;
     final archivedRaw = json['archivedAt'] as String?;
     final trashedRaw = json['trashedAt'] as String?;
@@ -212,6 +246,7 @@ class Product {
           ((json['wholesaleMinQty'] as num?)?.toInt() ?? 0).clamp(0, 999999),
       stock: (json['stock'] as num).toDouble(),
       lowStockThreshold: (json['lowStockThreshold'] as num?)?.toInt() ?? 5,
+      expiryDate: expiryRaw != null ? DateTime.tryParse(expiryRaw) : null,
       outOfStockSince:
           outOfStockRaw != null ? DateTime.tryParse(outOfStockRaw) : null,
       totalOutOfStockDays:

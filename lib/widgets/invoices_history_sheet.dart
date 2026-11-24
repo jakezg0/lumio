@@ -6,6 +6,7 @@ import '../models/sale.dart';
 import '../models/stock_in.dart';
 import '../screens/barcode_scanner_screen.dart';
 import '../services/export_service.dart';
+import '../services/whatsapp_launcher.dart';
 import '../state/shop_controller.dart';
 import 'formatters.dart';
 import 'price_tag_queue_sheet.dart';
@@ -190,6 +191,153 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.paymentRecorded)),
+      );
+    }
+  }
+
+  Future<void> _showDiscrepancyDialog(StockInRecord inv) async {
+    final strings = widget.controller.strings;
+    final types = <String, StockInDiscrepancyType?>{
+      for (final item in inv.items) item.productId: item.discrepancyType,
+    };
+    final qtyCtrls = <String, TextEditingController>{
+      for (final item in inv.items)
+        item.productId: TextEditingController(
+          text: item.discrepancyQty > 0 ? formatQty(item.discrepancyQty) : '',
+        ),
+    };
+    final noteCtrls = <String, TextEditingController>{
+      for (final item in inv.items)
+        item.productId: TextEditingController(text: item.discrepancyNote),
+    };
+    var deductFromStock = true;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) => AlertDialog(
+          title: Text(strings.discrepancyBtnLabel),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final item in inv.items) ...[
+                  Text(
+                    '${item.productName} (${formatQty(item.quantity)})',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      for (final t in StockInDiscrepancyType.values)
+                        ChoiceChip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(strings.discrepancyTypeLabel(t.name)),
+                          selected: types[item.productId] == t,
+                          onSelected: (sel) {
+                            setDialogState(() {
+                              if (sel) {
+                                types[item.productId] = t;
+                                if (qtyCtrls[item.productId]!.text.trim().isEmpty) {
+                                  qtyCtrls[item.productId]!.text = '1';
+                                }
+                              } else {
+                                types[item.productId] = null;
+                                qtyCtrls[item.productId]!.clear();
+                                noteCtrls[item.productId]!.clear();
+                              }
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                  if (types[item.productId] != null) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 110,
+                          child: TextField(
+                            controller: qtyCtrls[item.productId],
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            decoration: InputDecoration(
+                              labelText: strings.discrepancyQtyLabel,
+                              border: const OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            controller: noteCtrls[item.productId],
+                            decoration: InputDecoration(
+                              labelText: strings.discrepancyNoteHint,
+                              border: const OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                ],
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  value: deductFromStock,
+                  onChanged: (v) =>
+                      setDialogState(() => deductFromStock = v ?? true),
+                  title: Text(strings.deductDiscrepancyFromStockLabel),
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(false),
+              child: Text(strings.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(true),
+              child: Text(strings.confirm),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final payload = <String, ({StockInDiscrepancyType? type, double qty, String note})>{
+      for (final item in inv.items)
+        item.productId: (
+          type: types[item.productId],
+          qty: parseQty(qtyCtrls[item.productId]!.text) ?? 0,
+          note: noteCtrls[item.productId]!.text.trim(),
+        ),
+    };
+    for (final c in qtyCtrls.values) {
+      c.dispose();
+    }
+    for (final c in noteCtrls.values) {
+      c.dispose();
+    }
+    if (confirmed != true || !mounted) return;
+
+    await widget.controller.recordStockInDiscrepancy(
+      stockInId: inv.id,
+      discrepancies: payload,
+      deductFromStock: deductFromStock,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.discrepancySavedMsg)),
       );
     }
   }
@@ -589,6 +737,10 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                                 )
                               else if (inv.isCredit)
                                 strings.debtPaidBadge,
+                              if (inv.hasDiscrepancy)
+                                strings.discrepancyBadge(
+                                  strings.unitsShort(inv.totalDiscrepancyUnits),
+                                ),
                             ].join(' • '),
                           ),
                           childrenPadding:
@@ -598,16 +750,36 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                               Padding(
                                 padding:
                                     const EdgeInsets.symmetric(vertical: 2),
-                                child: Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Expanded(
-                                      child: Text(
-                                        '${item.productName} (${item.quantity} × ${formatMoney(item.unitCost, currency)})',
-                                      ),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            '${item.productName} (${item.quantity} × ${formatMoney(item.unitCost, currency)})',
+                                          ),
+                                        ),
+                                        Text(
+                                          formatMoney(item.lineTotal, currency),
+                                        ),
+                                      ],
                                     ),
-                                    Text(formatMoney(item.lineTotal, currency)),
+                                    if (item.hasDiscrepancy)
+                                      Text(
+                                        '⚠ ${strings.discrepancyTypeLabel(item.discrepancyType!.name)}: ${formatQty(item.discrepancyQty)}${item.discrepancyNote.isNotEmpty ? ' (${item.discrepancyNote})' : ''}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .error,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
                                   ],
                                 ),
                               ),
@@ -694,6 +866,56 @@ class _InvoicesHistorySheetState extends State<InvoicesHistorySheet> {
                                     label: const Text('PDF'),
                                   ),
                                 ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => _showDiscrepancyDialog(inv),
+                                    icon: const Icon(
+                                      Icons.report_problem_outlined,
+                                      size: 18,
+                                    ),
+                                    label: Text(strings.discrepancyBtnLabel),
+                                  ),
+                                ),
+                                if (inv.hasDiscrepancy) ...[
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: FilledButton.tonalIcon(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .errorContainer,
+                                        foregroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .onErrorContainer,
+                                      ),
+                                      onPressed: () async {
+                                        final text = ExportService
+                                            .buildSupplierClaimText(
+                                          inv,
+                                          strings,
+                                          currency,
+                                          shopName: widget.controller.shopName,
+                                          shopPhone: widget.controller.shopPhone,
+                                        );
+                                        await WhatsAppLauncher.openChatOrShare(
+                                          phone: '',
+                                          message: text,
+                                          subject: strings.supplierClaimTitle,
+                                        );
+                                      },
+                                      icon: const Icon(
+                                        Icons.chat_outlined,
+                                        size: 18,
+                                      ),
+                                      label: Text(strings.sendClaimWhatsAppBtn),
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 8),

@@ -1,3 +1,9 @@
+enum StockInDiscrepancyType {
+  shortage,
+  defect,
+  mismatch,
+}
+
 class SupplierDebtPayment {
   const SupplierDebtPayment({
     required this.amount,
@@ -27,6 +33,9 @@ class StockInItem {
     required this.quantity,
     required this.unitCost,
     this.newSellPrice,
+    this.discrepancyType,
+    this.discrepancyQty = 0,
+    this.discrepancyNote = '',
   });
 
   final String productId;
@@ -34,8 +43,43 @@ class StockInItem {
   final double quantity;
   final double unitCost;
   final double? newSellPrice;
+  final StockInDiscrepancyType? discrepancyType;
+  final double discrepancyQty;
+  final String discrepancyNote;
 
   double get lineTotal => quantity * unitCost;
+
+  bool get hasDiscrepancy =>
+      discrepancyType != null && discrepancyQty > 0.0005;
+
+  double get discrepancyCost =>
+      hasDiscrepancy ? discrepancyQty * unitCost : 0.0;
+
+  StockInItem copyWith({
+    String? productId,
+    String? productName,
+    double? quantity,
+    double? unitCost,
+    double? newSellPrice,
+    StockInDiscrepancyType? discrepancyType,
+    bool clearDiscrepancy = false,
+    double? discrepancyQty,
+    String? discrepancyNote,
+  }) {
+    return StockInItem(
+      productId: productId ?? this.productId,
+      productName: productName ?? this.productName,
+      quantity: quantity ?? this.quantity,
+      unitCost: unitCost ?? this.unitCost,
+      newSellPrice: newSellPrice ?? this.newSellPrice,
+      discrepancyType:
+          clearDiscrepancy ? null : (discrepancyType ?? this.discrepancyType),
+      discrepancyQty:
+          clearDiscrepancy ? 0 : (discrepancyQty ?? this.discrepancyQty),
+      discrepancyNote:
+          clearDiscrepancy ? '' : (discrepancyNote ?? this.discrepancyNote),
+    );
+  }
 
   Map<String, dynamic> toJson() {
     return {
@@ -44,16 +88,33 @@ class StockInItem {
       'quantity': quantity,
       'unitCost': unitCost,
       if (newSellPrice != null) 'newSellPrice': newSellPrice,
+      if (hasDiscrepancy) 'discrepancyType': discrepancyType!.name,
+      if (hasDiscrepancy) 'discrepancyQty': discrepancyQty,
+      if (hasDiscrepancy && discrepancyNote.trim().isNotEmpty)
+        'discrepancyNote': discrepancyNote.trim(),
     };
   }
 
   factory StockInItem.fromJson(Map<String, dynamic> json) {
+    final rawType = json['discrepancyType'] as String?;
+    StockInDiscrepancyType? parsedType;
+    if (rawType != null && rawType.isNotEmpty) {
+      for (final t in StockInDiscrepancyType.values) {
+        if (t.name == rawType) {
+          parsedType = t;
+          break;
+        }
+      }
+    }
     return StockInItem(
       productId: json['productId'] as String,
       productName: json['productName'] as String,
       quantity: (json['quantity'] as num).toDouble(),
       unitCost: (json['unitCost'] as num).toDouble(),
       newSellPrice: (json['newSellPrice'] as num?)?.toDouble(),
+      discrepancyType: parsedType,
+      discrepancyQty: (json['discrepancyQty'] as num?)?.toDouble() ?? 0.0,
+      discrepancyNote: (json['discrepancyNote'] as String?) ?? '',
     );
   }
 }
@@ -96,6 +157,19 @@ class StockInRecord {
 
   bool get isPartiallyPaid =>
       isCredit && effectivePaidAmount > 0.009 && !isPaid;
+
+  bool get hasDiscrepancy => items.any((i) => i.hasDiscrepancy);
+
+  List<StockInItem> get discrepancyItems =>
+      items.where((i) => i.hasDiscrepancy).toList(growable: false);
+
+  double get totalDiscrepancyUnits => items.fold(
+        0.0,
+        (sum, i) => sum + (i.hasDiscrepancy ? i.discrepancyQty : 0.0),
+      );
+
+  double get totalDiscrepancyCost =>
+      items.fold(0.0, (sum, i) => sum + i.discrepancyCost);
 
   String get exchangeRateLabel {
     final code = currencyCode.trim().toUpperCase();
@@ -178,6 +252,7 @@ class StockInRecord {
 class StockInDraft {
   const StockInDraft({
     this.supplierName = '',
+    this.supplierPhone = '',
     this.currencyCode = '',
     this.exchangeRate,
     this.recordAsExpense = true,
@@ -186,9 +261,13 @@ class StockInDraft {
     this.quantities = const {},
     this.unitCosts = const {},
     this.sellPrices = const {},
+    this.discrepancyTypes = const {},
+    this.discrepancyQtys = const {},
+    this.discrepancyNotes = const {},
   });
 
   final String supplierName;
+  final String supplierPhone;
   final String currencyCode;
   final double? exchangeRate;
   final bool recordAsExpense;
@@ -197,20 +276,26 @@ class StockInDraft {
   final Map<String, double> quantities;
   final Map<String, double> unitCosts;
   final Map<String, double> sellPrices;
+  final Map<String, StockInDiscrepancyType> discrepancyTypes;
+  final Map<String, double> discrepancyQtys;
+  final Map<String, String> discrepancyNotes;
 
   double get totalUnits =>
       quantities.values.fold(0.0, (sum, q) => sum + (q > 0 ? q : 0));
 
   bool get hasContent =>
       supplierName.trim().isNotEmpty ||
+      supplierPhone.trim().isNotEmpty ||
       (exchangeRate != null && exchangeRate! > 0) ||
       isCredit ||
       initialPaidAmount > 0 ||
-      quantities.values.any((q) => q > 0);
+      quantities.values.any((q) => q > 0) ||
+      discrepancyQtys.values.any((q) => q > 0);
 
   Map<String, dynamic> toJson() {
     return {
       'supplierName': supplierName,
+      if (supplierPhone.trim().isNotEmpty) 'supplierPhone': supplierPhone.trim(),
       if (currencyCode.trim().isNotEmpty) 'currencyCode': currencyCode.trim(),
       if (exchangeRate != null && exchangeRate! > 0)
         'exchangeRate': exchangeRate,
@@ -220,6 +305,10 @@ class StockInDraft {
       'quantities': quantities,
       'unitCosts': unitCosts,
       'sellPrices': sellPrices,
+      if (discrepancyTypes.isNotEmpty)
+        'discrepancyTypes': discrepancyTypes.map((k, v) => MapEntry(k, v.name)),
+      if (discrepancyQtys.isNotEmpty) 'discrepancyQtys': discrepancyQtys,
+      if (discrepancyNotes.isNotEmpty) 'discrepancyNotes': discrepancyNotes,
     };
   }
 
@@ -227,8 +316,24 @@ class StockInDraft {
     final rawQty = json['quantities'] as Map<String, dynamic>? ?? const {};
     final rawCosts = json['unitCosts'] as Map<String, dynamic>? ?? const {};
     final rawSells = json['sellPrices'] as Map<String, dynamic>? ?? const {};
+    final rawDiscTypes =
+        json['discrepancyTypes'] as Map<String, dynamic>? ?? const {};
+    final rawDiscQtys =
+        json['discrepancyQtys'] as Map<String, dynamic>? ?? const {};
+    final rawDiscNotes =
+        json['discrepancyNotes'] as Map<String, dynamic>? ?? const {};
+    final parsedDiscTypes = <String, StockInDiscrepancyType>{};
+    for (final entry in rawDiscTypes.entries) {
+      for (final t in StockInDiscrepancyType.values) {
+        if (t.name == entry.value) {
+          parsedDiscTypes[entry.key] = t;
+          break;
+        }
+      }
+    }
     return StockInDraft(
       supplierName: (json['supplierName'] as String?) ?? '',
+      supplierPhone: (json['supplierPhone'] as String?) ?? '',
       currencyCode: (json['currencyCode'] as String?) ?? '',
       exchangeRate: (json['exchangeRate'] as num?)?.toDouble(),
       recordAsExpense: (json['recordAsExpense'] as bool?) ?? true,
@@ -247,6 +352,17 @@ class StockInDraft {
       sellPrices: {
         for (final entry in rawSells.entries)
           entry.key: (entry.value as num).toDouble(),
+      },
+      discrepancyTypes: parsedDiscTypes,
+      discrepancyQtys: {
+        for (final entry in rawDiscQtys.entries)
+          if ((entry.value as num).toDouble() > 0)
+            entry.key: (entry.value as num).toDouble(),
+      },
+      discrepancyNotes: {
+        for (final entry in rawDiscNotes.entries)
+          if ('${entry.value}'.trim().isNotEmpty)
+            entry.key: '${entry.value}'.trim(),
       },
     );
   }

@@ -816,6 +816,41 @@ class ExportService {
     return lines.join('\n');
   }
 
+  static String buildSupplierClaimText(
+    StockInRecord record,
+    AppStrings strings,
+    AppCurrency currency, {
+    String shopName = 'Lumio',
+    String shopPhone = '',
+  }) {
+    final discItems = record.discrepancyItems;
+    if (discItems.isEmpty) return '';
+    final lines = <String>[
+      if (shopName.trim().isNotEmpty) '*${shopName.trim()}*',
+      if (shopPhone.trim().isNotEmpty) shopPhone.trim(),
+      strings.supplierClaimTitle,
+      formatDateTime(record.createdAt),
+      if (record.supplierName.trim().isNotEmpty)
+        '${strings.supplierNameHint.split('(').first.trim()}: ${record.supplierName.trim()}',
+      '---',
+      for (var i = 0; i < discItems.length; i++)
+        () {
+          final item = discItems[i];
+          final typeLabel = strings.discrepancyTypeLabel(
+            item.discrepancyType!.name,
+          );
+          final notePart = item.discrepancyNote.trim().isNotEmpty
+              ? ' (${item.discrepancyNote.trim()})'
+              : '';
+          return '${i + 1}. ${item.productName}: $typeLabel — ${formatQty(item.discrepancyQty)} × ${formatMoney(item.unitCost, currency)} = ${formatMoney(item.discrepancyCost, currency)}$notePart';
+        }(),
+      '---',
+      '${strings.supplierClaimTotalLabel}: ${strings.unitsShort(record.totalDiscrepancyUnits)} • ${formatMoney(record.totalDiscrepancyCost, currency)}',
+      strings.supplierClaimClosingNote,
+    ];
+    return lines.join('\n');
+  }
+
   static Future<Uint8List> buildStockInPdfBytes(
     StockInRecord record,
     AppStrings strings,
